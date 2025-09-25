@@ -30,6 +30,7 @@ public class GoatNetherPortals extends JavaPlugin {
     private YamlConfiguration globalPortalMap;
     private final Set<UUID> inspectingPlayers = new HashSet<>();
     private boolean debugMarkersVisible = false;
+    private boolean debugMode = false;
     private InspectListener inspectListener;
     private final Random random = new Random();
 
@@ -169,6 +170,20 @@ public class GoatNetherPortals extends JavaPlugin {
             inspectingPlayers.remove(uuid);
         } else {
             inspectingPlayers.add(uuid);
+        }
+    }
+
+    public boolean isDebugMode() {
+        return debugMode;
+    }
+
+    public void setDebugMode(boolean debugMode) {
+        this.debugMode = debugMode;
+    }
+
+    public void debugLog(String message) {
+        if (debugMode) {
+            getLogger().info("[DEBUG] " + message);
         }
     }
     

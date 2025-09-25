@@ -80,24 +80,16 @@ public class PortalManager {
     private YamlConfiguration globalPortalMap;
     public final Map<UUID, Long> recentIgniteTimestamps = new HashMap<>();
     private final Set<UUID> igniteCooldown = ConcurrentHashMap.newKeySet();
-    private final Map<String, Long> recentSaveLock = new HashMap<>();
     private final Map<UUID, YamlConfiguration> queuedPlayerConfigs = new ConcurrentHashMap<>();
-    //private final Set<String> spawnedMarkers = Collections.newSetFromMap(new ConcurrentHashMap<>());
-    //private final Map<String, PortalInfo> portalMap = new HashMap<>(); This may still be needed for portal in memory storage
     private final Map<String, Long> recentScanLock = new HashMap<>();
-    private final Map<Location, String> portalEntryZones = new HashMap<>(); // region → linkCode
     private final java.util.Set<String> spawnedMarkers =
             java.util.Collections.newSetFromMap(new java.util.concurrent.ConcurrentHashMap<>());
 
     private final Map<UUID, String> playerPendingLinks = new HashMap<>();
-    public List<Block> portalBlocks;
     private final List<DetectionRegion> detectionRegions = new ArrayList<>();
-    private final Map<UUID, Map<String, Long>> recentSaveTimestamps = new HashMap<>();
-    private final Map<String, Long> recentPortalCooldowns = new HashMap<>();
     private final Queue<MarkerTask> markerQueue = new LinkedList<>();
     private boolean isMarkerSpawning = false;
     public static final UUID SERVER_UUID = UUID.fromString("00000000-0000-0000-0000-000000000001");
-    private final Set<String> recentScanLocations = Collections.newSetFromMap(new ConcurrentHashMap<>());
     private final Map<UUID, String> recentPortalEntries = new HashMap<>();
 
     public YamlConfiguration getOrCreatePlayerConfig(UUID uuid) {
@@ -127,9 +119,7 @@ public class PortalManager {
     }
 
     private void debugScan(String label, Location loc) {
-        if (plugin.getConfig().getBoolean("verboseLogging", false)) {
-            plugin.getLogger().info("🌀 [SCAN] " + label + " @ (" + loc.getBlockX() + ", " + loc.getBlockY() + ", " + loc.getBlockZ() + ")");
-        }
+        plugin.debugLog("🌀 [SCAN] " + label + " @ (" + loc.getBlockX() + ", " + loc.getBlockY() + ", " + loc.getBlockZ() + ")");
     }
 
  // ⛓️ Helper struct
@@ -361,22 +351,22 @@ public class PortalManager {
         String worldName = loc.getWorld().getName();
 
     	if (frameOverride == null) {
-    	    plugin.getLogger().severe("❌ saveLink() received NULL frameOverride!");
+			plugin.debugLog("❌ saveLink() received NULL frameOverride!");
     	}
 
         if (playerName == null || loc == null || loc.getWorld() == null) {
-            plugin.getLogger().warning("⚠️ saveLink() short triggered");
-            plugin.getLogger().warning("  playerName = " + playerName);
-            plugin.getLogger().warning("  loc        = " + loc);
-            plugin.getLogger().warning("  world      = " + (loc != null ? loc.getWorld() : "null"));
+			plugin.debugLog("⚠️ saveLink() short triggered");
+			plugin.debugLog("  playerName = " + playerName);
+			plugin.debugLog("  loc        = " + loc);
+			plugin.debugLog("  world      = " + (loc != null ? loc.getWorld() : "null"));
             return;
         }
         if (linkCode == null) {
-            plugin.getLogger().severe("❌ saveLink() called with null linkCode — this is invalid and should be fixed upstream.");
+			plugin.debugLog("❌ saveLink() called with null linkCode — this is invalid and should be fixed upstream.");
             return;
         } else {
             // Use existing code
-            plugin.getLogger().info("🔗 saveLink() using provided linkCode: " + linkCode);
+			plugin.debugLog("🔗 saveLink() using provided linkCode: " + linkCode);
         }
         World world = loc.getWorld();  // ✅ Add this line
 
@@ -398,18 +388,18 @@ public class PortalManager {
 
 
         if (frame == null) {
-            plugin.getLogger().warning("❌ saveLink() failed, frame is null");
+            plugin.debugLog("❌ saveLink() failed, frame is null");
             return;
         }
 
         if (frameOverride != null) {
             if (frameOverride.bottomLeft == null || frameOverride.bottomRight == null ||
                 frameOverride.topLeft == null || frameOverride.topRight == null) {
-                plugin.getLogger().severe("❌ saveLink() - Frame has null corners. Aborting save.");
-                plugin.getLogger().severe("BottomLeft: " + frameOverride.bottomLeft);
-                plugin.getLogger().severe("BottomRight: " + frameOverride.bottomRight);
-                plugin.getLogger().severe("TopLeft: " + frameOverride.topLeft);
-                plugin.getLogger().severe("TopRight: " + frameOverride.topRight);
+                plugin.debugLog("❌ saveLink() - Frame has null corners. Aborting save.");
+                plugin.debugLog("BottomLeft: " + frameOverride.bottomLeft);
+                plugin.debugLog("BottomRight: " + frameOverride.bottomRight);
+                plugin.debugLog("TopLeft: " + frameOverride.topLeft);
+                plugin.debugLog("TopRight: " + frameOverride.topRight);
                 return;
             }
         }
@@ -442,7 +432,7 @@ public class PortalManager {
             locSection.set("yaw", loc.getYaw());
             locSection.set("pitch", loc.getPitch());
         } else {
-            plugin.getLogger().info("🛑 [saveLink] Skipping overwrite of existing location for link: " + linkCode);
+            plugin.debugLog("🛑 [saveLink] Skipping overwrite of existing location for link: " + linkCode);
         }
 
         Location cornerCheckLoc = loadUniversalLocation(worldSection.getConfigurationSection("frame.corner"), world);
@@ -461,22 +451,22 @@ public class PortalManager {
 
         ConfigurationSection cornerSection = frameSection.createSection("corner");
         if (frame.bottomLeft == null) {
-            plugin.getLogger().severe("❌ frame.bottomLeft is NULL during saveLink");
+            plugin.debugLog("❌ frame.bottomLeft is NULL during saveLink");
         } else {
             cornerSection.set("Bottom-Left", formatCoord(frame.bottomLeft));
         }
         if (frame.bottomRight == null) {
-            plugin.getLogger().severe("❌ frame.bottomRight is NULL during saveLink");
+            plugin.debugLog("❌ frame.bottomRight is NULL during saveLink");
         } else {
             cornerSection.set("Bottom-Right", formatCoord(frame.bottomRight));
         }
         if (frame.topLeft == null) {
-            plugin.getLogger().severe("❌ frame.topLeft is NULL during saveLink");
+            plugin.debugLog("❌ frame.topLeft is NULL during saveLink");
         } else {
             cornerSection.set("Top-Left", formatCoord(frame.topLeft));
         }
         if (frame.topRight == null) {
-            plugin.getLogger().severe("❌ frame.topRight is NULL during saveLink");
+            plugin.debugLog("❌ frame.topRight is NULL during saveLink");
         } else {
             cornerSection.set("Top-Right", formatCoord(frame.topRight));
         }
@@ -514,27 +504,18 @@ public class PortalManager {
             markerSection.set("corner", formatCoord(frame.bottomLeft));
             markerSection.set("orientation", orientation);
         } else {
-            plugin.getLogger().severe("❌ markerLoc is NULL — skipping marker save");
+            plugin.debugLog("❌ markerLoc is NULL — skipping marker save");
         }
 
         detectionRegions.add(new DetectionRegion(expandedMin, expandedMax, linkCode));
-        plugin.getLogger().info("📦 Registered detection region: " + formatLoc(expandedMin) + " → " + formatLoc(expandedMax));
+        plugin.debugLog("📦 Registered detection region: " + formatLoc(expandedMin) + " → " + formatLoc(expandedMax));
 
 	     // If both exist, nothing to generate. If neither exists, bail (shouldn't happen after save).
 
      // 🪧 Spawn marker (for Portal-A)
-        plugin.getLogger().info("🪧 [MARKER] Spawning marker for Portal-A at: " + frame.bottomLeft + " for code: " + linkCode);
+        plugin.debugLog("🪧 [MARKER] Spawning marker for Portal-A at: " + frame.bottomLeft + " for code: " + linkCode);
         //spawnPortalMarker(frame, linkCode, uuid);
         queueMarkerSpawn(frame, linkCode, uuid);
-
-
-        for (Block portalBlock : frame.portalBlocks) {
-            Location portalLoc = portalBlock.getLocation();
-            Vector dir1 = orientation.equals("X") ? new Vector(0, 0, 1) : new Vector(1, 0, 0);
-            Vector dir2 = dir1.clone().multiply(-1);
-            portalEntryZones.put(portalLoc.clone().add(dir1).getBlock().getLocation(), linkCode);
-            portalEntryZones.put(portalLoc.clone().add(dir2).getBlock().getLocation(), linkCode);
-        }
 
      String otherWorldName = plugin.getOppositeWorld(worldName);
      Location dest = getPendingPortalLocation(linkCode, otherWorldName, uuid);
@@ -557,7 +538,7 @@ public class PortalManager {
 
     private String formatCoord(Location loc) {
         if (loc == null) {
-            plugin.getLogger().warning("⚠️ formatCoord() called with null location");
+            plugin.debugLog("⚠️ formatCoord() called with null location");
             return "0, 0, 0"; // Return default value
         }
         return loc.getBlockX() + ", " + loc.getBlockY() + ", " + loc.getBlockZ();
@@ -585,7 +566,7 @@ public class PortalManager {
             }
         }
 
-        plugin.getLogger().warning("⚠️ loadUniversalLocation fallback at section: " + section.getCurrentPath());
+        plugin.debugLog("⚠️ loadUniversalLocation fallback at section: " + section.getCurrentPath());
         return new Location(world, 0, 0, 0);
     }
 
@@ -603,7 +584,7 @@ public class PortalManager {
             int z = Integer.parseInt(parts[2].trim());
             return new Location(null, x, y, z); // Caller must set world
         } catch (NumberFormatException e) {
-            plugin.getLogger().warning("⚠️ Failed to parse coord string: " + coordString);
+            plugin.debugLog("⚠️ Failed to parse coord string: " + coordString);
             return null;
         }
     }
@@ -616,9 +597,8 @@ public class PortalManager {
 
         try {
             config.save(file);
-            //plugin.getLogger().info("🔁 forceGeneratePairedPortal skipped — no pending portal found for " + linkCode);
         } catch (IOException e) {
-            //plugin.getLogger().warning("❌ Failed to commit player data for " + uuid);
+            plugin.debugLog("❌ Failed to commit player data for " + uuid);
             e.printStackTrace();
         }
     }
@@ -725,34 +705,20 @@ public class PortalManager {
 
 
 
-    public void logPortalBuild(Location loc, String facing) {
-        File folder = plugin.getDataFolder();
-        File logFile = new File(folder, "portal_rebuilds.log");
-
-        String message = "[" + System.currentTimeMillis() + "] Portal rebuilt at "
-                + loc.getWorld().getName() + " (" + loc.getBlockX() + "," + loc.getBlockY() + "," + loc.getBlockZ()
-                + ") facing " + facing;
-
-        try {
-            Files.writeString(logFile.toPath(), message + System.lineSeparator(), StandardOpenOption.CREATE, StandardOpenOption.APPEND);
-        } catch (IOException e) {
-            //plugin.getLogger().warning("Failed to write to portal_rebuilds.log");
-        }
-    }
 
     public void registerPortal(Player player, Location loc, String linkCode, PortalFrame frame) {
         if (frame == null || linkCode == null) {
-            plugin.getLogger().severe("❌ registerPortal() missing frame or linkCode");
+            plugin.debugLog("❌ registerPortal() missing frame or linkCode");
             return;
         }
 
         // 💡 Corner safety checks
         if (frame.bottomLeft == null || frame.bottomRight == null || frame.topLeft == null || frame.topRight == null) {
-            plugin.getLogger().severe("❌ registerPortal() - Frame has null corners. Aborting save.");
-            plugin.getLogger().severe("BottomLeft: " + frame.bottomLeft);
-            plugin.getLogger().severe("BottomRight: " + frame.bottomRight);
-            plugin.getLogger().severe("TopLeft: " + frame.topLeft);
-            plugin.getLogger().severe("TopRight: " + frame.topRight);
+            plugin.debugLog("❌ registerPortal() - Frame has null corners. Aborting save.");
+            plugin.debugLog("BottomLeft: " + frame.bottomLeft);
+            plugin.debugLog("BottomRight: " + frame.bottomRight);
+            plugin.debugLog("TopLeft: " + frame.topLeft);
+            plugin.debugLog("TopRight: " + frame.topRight);
             return;
         }
 
@@ -771,7 +737,7 @@ public class PortalManager {
             return;
         }
 
-        plugin.getLogger().warning("📦 About to spawn marker for: " + linkCode);
+        plugin.debugLog("📦 About to spawn marker for: " + linkCode);
         //spawnPortalMarker(frame, linkCode, uuid); // ✅ Visual marker
         queueMarkerSpawn(frame, linkCode, uuid);
 
@@ -805,7 +771,7 @@ public class PortalManager {
         config.set("name", player.getName());
         savePlayerConfig(uuid, config);
 
-        plugin.getLogger().info("📍 registerPortal() loc = " + loc);
+        plugin.debugLog("📍 registerPortal() loc = " + loc);
         saveLink(player.getName(), corner, false, linkCode, frame); // ✅ Only now do we save
         addPortalToGlobalMap(linkCode, uuid);
 
@@ -1230,9 +1196,9 @@ public class PortalManager {
 
             try {
                 yaml.save(file);
-                plugin.getLogger().info("✅ Added portal link " + linkCode + " to portalMap.yml");
+                plugin.debugLog("✅ Added portal link " + linkCode + " to portalMap.yml");
             } catch (IOException e) {
-                plugin.getLogger().warning("❌ Failed to save portalMap.yml");
+                plugin.debugLog("❌ Failed to save portalMap.yml");
                 e.printStackTrace();
             }
         }
@@ -1246,9 +1212,9 @@ public class PortalManager {
 
         try {
             yaml.save(file);
-            plugin.getLogger().info("✅ Updated portalMap: " + linkCode + "." + keyPath + " = " + value);
+            plugin.debugLog("✅ Updated portalMap: " + linkCode + "." + keyPath + " = " + value);
         } catch (IOException e) {
-            plugin.getLogger().warning("❌ Failed to save portalMap.yml during setPortalMetadata");
+            plugin.debugLog("❌ Failed to save portalMap.yml during setPortalMetadata");
             e.printStackTrace();
         }
     }
@@ -1264,7 +1230,7 @@ public class PortalManager {
         try {
             return UUID.fromString(ownerStr);
         } catch (IllegalArgumentException e) {
-            plugin.getLogger().warning("⚠ Invalid UUID in portalMap.yml for linkCode: " + linkCode);
+            plugin.debugLog("⚠ Invalid UUID in portalMap.yml for linkCode: " + linkCode);
             return null;
         }
     }
@@ -1306,12 +1272,12 @@ public class PortalManager {
                     int x = loc.getBlockX(), y = loc.getBlockY(), z = loc.getBlockZ();
                     if (x >= minX && x <= maxX && y >= minY && y <= maxY && z >= minZ && z <= maxZ) {
                         frame.cornerMarker = loc.clone(); // keep frame state in sync
-                        plugin.getLogger().info("⏭️ [MARKER] Already spawned for " + __markerKey + " at " + formatLoc(loc));
+                        plugin.debugLog("⏭️ [MARKER] Already spawned for " + __markerKey + " at " + formatLoc(loc));
                         return;
                     }
                 }
             }
-            plugin.getLogger().info("⏭️ [MARKER] Already spawned for " + __markerKey);
+            plugin.debugLog("⏭️ [MARKER] Already spawned for " + __markerKey);
             return;
         }
 
@@ -1330,7 +1296,7 @@ public class PortalManager {
 
                 if (x >= minX && x <= maxX && y >= minY && y <= maxY && z >= minZ && z <= maxZ) {
                     frame.cornerMarker = loc.clone(); // keep frame state in sync
-                    plugin.getLogger().info("✅ [MARKER] Already exists for " + linkCode + " at " + formatLoc(loc));
+                    plugin.debugLog("✅ [MARKER] Already exists for " + linkCode + " at " + formatLoc(loc));
                     return; // Already exists inside this frame
                 }
             }
@@ -1378,7 +1344,7 @@ public class PortalManager {
             data.set(new NamespacedKey(plugin, "orientation"), PersistentDataType.STRING, frame.orientation);
         });
 
-        plugin.getLogger().info("🪧 Marker spawned for " + linkCode + " at: " + markerLoc.toVector());
+        plugin.debugLog("🪧 Marker spawned for " + linkCode + " at: " + markerLoc.toVector());
 
         // ✅ Update status if portal is valid
         if (!portalBlocksMissing(bottomLeft, frame.width, frame.height, frame.orientation)) {
@@ -1449,33 +1415,6 @@ public class PortalManager {
         return base.add(0.5, 0.0, 0.5); // Center of the portal block
     }
 
-    public String findSharedLinkCode(YamlConfiguration config, String world1, String world2) {
-        ConfigurationSection links = config.getConfigurationSection("links");
-        if (links == null) return null;
-
-        for (String code : links.getKeys(false)) {
-            ConfigurationSection entry = links.getConfigurationSection(code);
-            if (entry.contains(world1) && entry.contains(world2)) {
-                return code;
-            }
-        }
-        return null;
-    }
-
-    
-    public void removePortalMarker(String linkCode) {
-        for (World world : Bukkit.getWorlds()) {
-            for (Entity entity : world.getEntitiesByClass(ArmorStand.class)) {
-                PersistentDataContainer container = entity.getPersistentDataContainer();
-                NamespacedKey linkKey = new NamespacedKey(plugin, "linkCode");
-                String existingCode = container.get(linkKey, PersistentDataType.STRING);
-                if (linkCode.equals(existingCode)) {
-                    entity.remove();
-                    //plugin.getLogger().info("🗑 Removed portal marker with linkCode: " + linkCode);
-                }
-            }
-        }
-    }
 
     public void cleanupBrokenMarkers(World world) {
         for (Entity entity : world.getEntitiesByClass(ArmorStand.class)) {
@@ -1517,9 +1456,9 @@ public class PortalManager {
         //UUID uuid = player.getUniqueId();
      // 🐞 Debug who is triggering the registration
         if (player != null) {
-            plugin.getLogger().info("🔍 tryAutoRegisterPortal called by player: " + player.getName());
+            plugin.debugLog("🔍 tryAutoRegisterPortal called by player: " + player.getName());
         } else {
-            plugin.getLogger().info("🔍 tryAutoRegisterPortal called by SERVER/dispenser/command block.");
+            plugin.debugLog("🔍 tryAutoRegisterPortal called by SERVER/dispenser/command block.");
         }
         /* ⏱ Spam throttle
         long now = System.currentTimeMillis();
@@ -1530,12 +1469,12 @@ public class PortalManager {
         // 🔍 Find nearby portal block
         Location portalLoc = plugin.getPortalManager().findNearbyPortalBlock(base, 4);
         if (portalLoc == null || !isValidPortal(portalLoc)) {
-            plugin.getLogger().warning("❌ No valid portal block found near: " + base);
+            plugin.debugLog("❌ No valid portal block found near: " + base);
             return;
         }
         String linkCode = generateUniqueLinkCode(uuid);
         if (linkCode == null) {
-            plugin.getLogger().warning("❌ Failed to generate linkCode");
+            plugin.debugLog("❌ Failed to generate linkCode");
             return;
         }
         
@@ -1548,7 +1487,7 @@ public class PortalManager {
             : scanFullPortalFrame(portalLoc);
 
         if (frame == null) {
-            plugin.getLogger().warning("❌ Portal frame scan failed at: " + portalLoc);
+            plugin.debugLog("❌ Portal frame scan failed at: " + portalLoc);
             return;
         }
 
@@ -1562,10 +1501,8 @@ public class PortalManager {
         }*/
 
         // 💾 Save all portal data to player .yml (frame, interior, detection)
-        //plugin.getLogger().info("💾 Saving portal frame for " + player.getName() + " at " + portalLoc + " with code " + linkCode);
-        plugin.getLogger().info("💾 Saving portal frame for " + name + " at " + portalLoc + " with code " + linkCode);
+        plugin.debugLog("💾 Saving portal frame for " + name + " at " + portalLoc + " with code " + linkCode);
 
-        //saveLink(player.getName(), frame.bottomLeft, false, linkCode, frame);
         saveLink(name, frame.bottomLeft, false, linkCode, frame);
         if (uuid.equals(SERVER_UUID)) {
             plugin.getPortalManager().registerDispenserPortal(uuid, linkCode, frame, worldName);
@@ -1591,7 +1528,7 @@ public class PortalManager {
                 File file = new File(new File(plugin.getDataFolder(), "playerdata"), uuid.toString() + ".yml");
                 config.save(file);
             } catch (IOException e) {
-                plugin.getLogger().warning("❌ Failed to save reserved opposite world section.");
+                plugin.debugLog("❌ Failed to save reserved opposite world section.");
                 e.printStackTrace();
             }
         }
@@ -1695,18 +1632,18 @@ public class PortalManager {
         try {
             File file = new File(new File(plugin.getDataFolder(), "playerdata"), uuid.toString() + ".yml");
             config.save(file);
-            plugin.getLogger().info("✅ [DISPENSER-REGISTER] Portal origin registered and saved for: " + linkCode);
+            plugin.debugLog("✅ [DISPENSER-REGISTER] Portal origin registered and saved for: " + linkCode);
 
             // 🪧 Spawn the marker after save
             spawnPortalMarker(frame, linkCode, uuid);
          // 🔄 Force refresh detection zone in memory
             plugin.loadPlayerData(uuid);
-            plugin.getLogger().info("🔁 [DISPENSER-REGISTER] Player config reloaded into memory for link: " + linkCode);
+            plugin.debugLog("🔁 [DISPENSER-REGISTER] Player config reloaded into memory for link: " + linkCode);
 
             tagPortalFrame(frame.bottomLeft, linkCode, uuid);
 
         } catch (IOException e) {
-            plugin.getLogger().severe("❌ [DISPENSER-REGISTER] Failed to save portal origin.");
+            plugin.debugLog("❌ [DISPENSER-REGISTER] Failed to save portal origin.");
             e.printStackTrace();
         }
 
@@ -1827,7 +1764,7 @@ public class PortalManager {
             int z = Integer.parseInt(parts[2]);
             return new Location(world, x, y, z);
         } catch (NumberFormatException e) {
-            plugin.getLogger().warning("⚠️ Failed to parse coordinate: " + raw);
+            plugin.debugLog("⚠️ Failed to parse coordinate: " + raw);
             return null;
         }
     }
@@ -1911,21 +1848,6 @@ public class PortalManager {
         return null;
     }
 
-
-    //private final Map<UUID, Map<String, Long>> recentSaveTimestamps = new HashMap<>();
-
-    public boolean isSaveTooRecent(UUID uuid, String world) {
-        long now = System.currentTimeMillis();
-        long last = recentSaveTimestamps
-            .computeIfAbsent(uuid, k -> new HashMap<>())
-            .getOrDefault(world, 0L);
-
-        if (now - last < 1000) return true;
-
-        recentSaveTimestamps.get(uuid).put(world, now);
-        return false;
-    }
-
     public void cleanupPortalMarkers() {
         int totalRemoved = 0;
         for (World world : Bukkit.getWorlds()) {
@@ -1937,15 +1859,15 @@ public class PortalManager {
                 }
             }
             if (removed > 0) {
-                //plugin.getLogger().info("🧹 Removed " + removed + " portal markers from world: " + world.getName());
+                plugin.debugLog("🧹 Removed " + removed + " portal markers from world: " + world.getName());
                 totalRemoved += removed;
             }
         }
 
         if (totalRemoved == 0) {
-            //plugin.getLogger().info("✅ No portal markers found to clean up.");
+            plugin.debugLog("✅ No portal markers found to clean up.");
         } else {
-            //plugin.getLogger().info("✅ Total portal markers removed: " + totalRemoved);
+            plugin.debugLog("✅ Total portal markers removed: " + totalRemoved);
         }
         spawnedMarkers.clear();
     }
@@ -1963,7 +1885,7 @@ public class PortalManager {
             ConfigurationSection section = links.getConfigurationSection(code);
             if (section != null && section.contains(worldName)) {
                 section.set(worldName, null);
-                //plugin.getLogger().info("🧼 Removed portal link for " + playerName + " in world: " + worldName);
+                plugin.debugLog("🧼 Removed portal link for " + playerName + " in world: " + worldName);
                 try {
                     config.save(file);
                 } catch (Exception e) {
@@ -2061,7 +1983,7 @@ public class PortalManager {
         // Let Minecraft naturally ignite the portal
         tryTriggerNaturalPortal(center);
 
-        //plugin.getLogger().info("✅ Built frame and triggered portal at " + center);
+        plugin.debugLog("✅ Built frame and triggered portal at " + center);
 
         // Let marker and tag logic proceed
         tryRegisterArrivalPortal(center, linkCode, ownerUUID);
@@ -2109,14 +2031,14 @@ public class PortalManager {
                     }
 
                     if (!tooClose) {
-                        //plugin.getLogger().info("✅ Found safe portal location at " + test);
+                        plugin.debugLog("✅ Found safe portal location at " + test);
                         return test;
                     }
                 }
             }
         }
 
-        //plugin.getLogger().warning("⚠ No safe location found after searching up to radius " + maxRadius);
+        plugin.debugLog("⚠ No safe location found after searching up to radius " + maxRadius);
         return null;
     }
 
@@ -2171,7 +2093,7 @@ public class PortalManager {
     public void cleanupNearbyMarkers(Location center, String linkCode) {
         PortalFrame frame = scanFullPortalFrame(center);
         if (frame == null) {
-            plugin.getLogger().warning("❌ [CLEANUP] Could not scan frame at " + formatLoc(center));
+            plugin.debugLog("❌ [CLEANUP] Could not scan frame at " + formatLoc(center));
             return;
         }
 
@@ -2189,7 +2111,7 @@ public class PortalManager {
 
             if (linkCode.equals(existing)) {
                 stand.remove();
-                plugin.getLogger().info("🧹 [CLEANUP] Removed marker for linkCode: " + linkCode + " inside portal frame.");
+                plugin.debugLog("🧹 [CLEANUP] Removed marker for linkCode: " + linkCode + " inside portal frame.");
             }
         }
     }
@@ -2208,7 +2130,7 @@ public class PortalManager {
 
         String raw = frameCorner.getString("Bottom-Left");
         if (raw == null || raw.trim().equals("0, 0, 0")) {
-            plugin.getLogger().warning("❌ [getPendingPortalLocation] Bottom-Left is invalid or missing for " + linkCode + " in world: " + worldName);
+            plugin.debugLog("❌ [getPendingPortalLocation] Bottom-Left is invalid or missing for " + linkCode + " in world: " + worldName);
             return null;
         }
 
@@ -2274,7 +2196,7 @@ public class PortalManager {
 
                 if ("FRESH".equalsIgnoreCase(current)) {
                     data.set(statusKey, PersistentDataType.STRING, "NORMAL");
-                    //plugin.getLogger().info("✅ Marker with linkCode " + linkCode + " updated to NORMAL at " + stand.getLocation());
+                    plugin.debugLog("✅ Marker with linkCode " + linkCode + " updated to NORMAL at " + stand.getLocation());
                 }
             }
         }
@@ -2298,7 +2220,7 @@ public class PortalManager {
         // Ensure destination world exists/loaded
         org.bukkit.World destW = Bukkit.getWorld(destinationWorld);
         if (destW == null) {
-            plugin.getLogger().warning("[GNP] Destination world not loaded: " + destinationWorld);
+            plugin.debugLog("[GNP] Destination world not loaded: " + destinationWorld);
             return; // if you added requestPairedPortalBuild, it should create/load or defer
         }
         rawCorner.setWorld(destW);
@@ -2322,7 +2244,7 @@ public class PortalManager {
         int portalHeight = sourceFrame.topLeft.getBlockY() - sourceFrame.bottomLeft.getBlockY() + 1;
         Location safeDest = findSafeValidPortalLocation(destCorner, 8, 16, portalHeight);
         if (safeDest == null) {
-            plugin.getLogger().warning("❌ No safe destination found near: " + formatLoc(destCorner));
+            plugin.debugLog("❌ No safe destination found near: " + formatLoc(destCorner));
             return;
         }
         destCorner = safeDest;
@@ -2333,7 +2255,7 @@ public class PortalManager {
                 for (int dz = -1; dz <= 1; dz++) {
                     Block nearby = destCorner.clone().add(dx, dy, dz).getBlock();
                     if (nearby.getType() == Material.BEDROCK) {
-                        plugin.getLogger().warning("❌ Portal generation cancelled — would touch bedrock at: " + formatLoc(destCorner));
+                        plugin.debugLog("❌ Portal generation cancelled — would touch bedrock at: " + formatLoc(destCorner));
                         return;
                     }
                 }
@@ -2411,7 +2333,7 @@ public class PortalManager {
                 PortalFrame newFrame = scanFullPortalFrame(scanStart, visited, false, false);
                 if (newFrame == null) {
                     if (attempts >= 40) {
-                        plugin.getLogger().warning("⚠️ [PAIR] Portal-B scan failed after " + attempts + " attempts at " + destCornerFinal);
+                        plugin.debugLog("⚠️ [PAIR] Portal-B scan failed after " + attempts + " attempts at " + destCornerFinal);
                         this.cancel();
                     }
                     return;
@@ -2421,7 +2343,7 @@ public class PortalManager {
                 double d2 = newFrame.bottomLeft.distanceSquared(destCornerFinal);
                 if (d2 > 25.0) { // > 5 blocks from intended B corner? keep trying.
                     if (attempts >= 40) {
-                        plugin.getLogger().warning("⚠️ [PAIR] Found portal too far from target (" + Math.sqrt(d2) + " blocks). Giving up at " + destCornerFinal);
+                        plugin.debugLog("⚠️ [PAIR] Found portal too far from target (" + Math.sqrt(d2) + " blocks). Giving up at " + destCornerFinal);
                         this.cancel();
                     }
                     return;
@@ -2489,7 +2411,7 @@ public class PortalManager {
                     java.io.File file = new java.io.File(new java.io.File(plugin.getDataFolder(), "playerdata"), uuidFinal.toString() + ".yml");
                     delayedConfig.save(file);
                 } catch (java.io.IOException e) {
-                    plugin.getLogger().severe("❌ [PAIR] Failed to save portal config for: " + uuidFinal);
+                    plugin.debugLog("❌ [PAIR] Failed to save portal config for: " + uuidFinal);
                     e.printStackTrace();
                 }
 
@@ -2507,7 +2429,7 @@ public class PortalManager {
                 }
 
                 clearPendingLink(uuidFinal);
-                plugin.getLogger().info("✅ [PAIR] Portal-B registered for " + linkCodeFinal + " at " + destLoc);
+                plugin.debugLog("✅ [PAIR] Portal-B registered for " + linkCodeFinal + " at " + destLoc);
                 this.cancel();
             }
         }.runTaskTimer(plugin, 2L, 2L);
@@ -2528,14 +2450,14 @@ public class PortalManager {
         int correctedY = startY;
         if (correctedY < minY) {
             correctedY = minY;
-            plugin.getLogger().info("🔼 Adjusted portal Y upward to minY: " + correctedY);
+            plugin.debugLog("🔼 Adjusted portal Y upward to minY: " + correctedY);
         } else if ((correctedY + portalHeight + 1) > maxY) {
             correctedY = maxY - portalHeight - 1;
-            plugin.getLogger().info("🔽 Adjusted portal Y downward to fit below ceiling: " + correctedY);
+            plugin.debugLog("🔽 Adjusted portal Y downward to fit below ceiling: " + correctedY);
         }
 
         Location clamped = new Location(world, startX, correctedY, startZ);
-        plugin.getLogger().info("✅ Using corrected destination location: " + formatLoc(clamped));
+        plugin.debugLog("✅ Using corrected destination location: " + formatLoc(clamped));
 
         int attempts = 0;
         int offsetStep = 4;
@@ -2588,27 +2510,27 @@ public class PortalManager {
                                       bz2 >= minZ && bz1 <= maxZ;
 
                     if (overlap) {
-                        plugin.getLogger().warning("❌ Overlap detected with portal link " + linkCode + " at: " + formatLoc(stand.getLocation()));
+                        plugin.debugLog("❌ Overlap detected with portal link " + linkCode + " at: " + formatLoc(stand.getLocation()));
                         foundOverlap = true;
                         break;
                     }
 
                 } catch (Exception ex) {
-                    plugin.getLogger().warning("⚠️ Failed to process marker data for link " + linkCode);
+                    plugin.debugLog("⚠️ Failed to process marker data for link " + linkCode);
                 }
             }
 
             if (!foundOverlap) {
-                plugin.getLogger().info("✅ Destination frame volume is clear at: " + formatLoc(clamped));
+                plugin.debugLog("✅ Destination frame volume is clear at: " + formatLoc(clamped));
                 return clamped;
             }
 
             clamped.add(offsetStep, 0, offsetStep);
-            plugin.getLogger().info("↪ Retrying new destination offset to: " + formatLoc(clamped));
+            plugin.debugLog("↪ Retrying new destination offset to: " + formatLoc(clamped));
             attempts++;
         }
 
-        plugin.getLogger().warning("⚠ Gave up after " + maxAttempts + " attempts to avoid portal collision.");
+        plugin.debugLog("⚠ Gave up after " + maxAttempts + " attempts to avoid portal collision.");
         return clamped;
     }
 
@@ -2651,27 +2573,27 @@ public class PortalManager {
     	
         String existingCode = getLinkCodeFromBlock(origin);
         if (existingCode != null) {
-            plugin.getLogger().info("🔗 Found existing portal with code: " + existingCode);
+            plugin.debugLog("🔗 Found existing portal with code: " + existingCode);
             return null; // Or return existing frame if needed
         }
         
     	if (suppressDuplicate) {
     	    long last = recentScanLock.getOrDefault(key, 0L);
     	    if (now - last < 1000) {
-    	        plugin.getLogger().warning("⏳ [SCAN] Skipping duplicate scan at: " + key);
+	        plugin.debugLog("⏳ [SCAN] Skipping duplicate scan at: " + key);
     	        return null;
     	    }
     	    recentScanLock.put(key, now);
     	}
         if (origin == null || origin.getWorld() == null) {
-            plugin.getLogger().warning("❌ [SCAN] Null origin or world");
+            plugin.debugLog("❌ [SCAN] Null origin or world");
             return null;
         }
 
 
         //FROM HERE DOWN IS DEBUGGER
         if (origin.getBlockX() == 0 && origin.getBlockY() == 0 && origin.getBlockZ() == 0) {
-            plugin.getLogger().warning("🛑 SCAN STARTED FROM (0,0,0) — TRACKING DOWN SOURCE");
+            plugin.debugLog("🛑 SCAN STARTED FROM (0,0,0) — TRACKING DOWN SOURCE");
             Thread.dumpStack(); // still useful for full trace
             return null;
         }
@@ -2679,7 +2601,7 @@ public class PortalManager {
         StackTraceElement[] stack = Thread.currentThread().getStackTrace();
         for (int i = 2; i < stack.length; i++) {
             if (!stack[i].getClassName().contains("PortalManager")) {
-                plugin.getLogger().warning("📌 Actual scanFullPortalFrame caller: " +
+                plugin.debugLog("📌 Actual scanFullPortalFrame caller: " +
                     stack[i].getClassName() + "::" + stack[i].getMethodName() + " @ line " + stack[i].getLineNumber());
                 break;
             }
@@ -2691,11 +2613,11 @@ public class PortalManager {
 
         //Location center = origin.getBlock().getLocation();
         if (visited.contains(center)) {
-            plugin.getLogger().warning("🔁 [SCAN] Skipping already visited location: " + formatLoc(center));
+            plugin.debugLog("🔁 [SCAN] Skipping already visited location: " + formatLoc(center));
             return null;
         }
         visited.add(center);
-        plugin.getLogger().info("🌀 [SCAN] Scanning from portal block: " + formatLoc(center));
+        plugin.debugLog("🌀 [SCAN] Scanning from portal block: " + formatLoc(center));
 
         Direction.Axis axis = detectPortalAxis(center);
         int dx = axis == Direction.Axis.X ? 1 : 0;
@@ -2709,7 +2631,7 @@ public class PortalManager {
                 center.add(0, -1, 0);
             }
         } else {
-            plugin.getLogger().info("🎯 Dispenser scan: skipping downward adjustment");
+            plugin.debugLog("🎯 Dispenser scan: skipping downward adjustment");
         }
 
 
@@ -2724,7 +2646,7 @@ public class PortalManager {
         }
 
         if (width < 2 || height < 3) {
-            plugin.getLogger().warning("❌ [SCAN] Frame too small. Width: " + width + ", Height: " + height);
+            plugin.debugLog("❌ [SCAN] Frame too small. Width: " + width + ", Height: " + height);
             return null;
         }
 
@@ -2739,11 +2661,11 @@ public class PortalManager {
             Location b = bottomLeft.clone().add(dx * i, 0, dz * i);
             Location t = topLeft.clone().add(dx * i, 0, dz * i);
             if (!isFrame(b.getBlock().getType())) {
-                plugin.getLogger().warning("❌ Bottom edge block invalid at: " + formatLoc(b));
+                plugin.debugLog("❌ Bottom edge block invalid at: " + formatLoc(b));
                 valid = false;
             }
             if (!isFrame(t.getBlock().getType())) {
-                plugin.getLogger().warning("❌ Top edge block invalid at: " + formatLoc(t));
+                plugin.debugLog("❌ Top edge block invalid at: " + formatLoc(t));
                 valid = false;
             }
         }
@@ -2752,11 +2674,11 @@ public class PortalManager {
             Location l = bottomLeft.clone().add(0, j, 0);
             Location r = bottomRight.clone().add(0, j, 0);
             if (!isFrame(l.getBlock().getType())) {
-                plugin.getLogger().warning("❌ Left edge block invalid at: " + formatLoc(l));
+                plugin.debugLog("❌ Left edge block invalid at: " + formatLoc(l));
                 valid = false;
             }
             if (!isFrame(r.getBlock().getType())) {
-                plugin.getLogger().warning("❌ Right edge block invalid at: " + formatLoc(r));
+                plugin.debugLog("❌ Right edge block invalid at: " + formatLoc(r));
                 valid = false;
             }
         }
@@ -2768,7 +2690,7 @@ public class PortalManager {
                 Location loc = left.clone().add(dx * w, h, dz * w);
                 Material m = loc.getBlock().getType();
                 if (m != Material.NETHER_PORTAL && m != Material.AIR) {
-                    plugin.getLogger().warning("❌ Interior block invalid at: " + formatLoc(loc) + " was " + m);
+                    plugin.debugLog("❌ Interior block invalid at: " + formatLoc(loc) + " was " + m);
                     return null;
                 }
                 if (m == Material.NETHER_PORTAL) {
@@ -2783,28 +2705,28 @@ public class PortalManager {
         for (Location loc : new Location[]{bottomLeft, bottomRight, topLeft, topRight}) {
             if (loc.getBlock().getType() == Material.DIAMOND_BLOCK) {
                 diamonds++;
-                plugin.getLogger().info("💎 Diamond corner at: " + formatLoc(loc));
+                plugin.debugLog("💎 Diamond corner at: " + formatLoc(loc));
             }
         }
 
-        plugin.getLogger().info("✅ [SCAN] Portal interior size: " + width + "w × " + height + "h (usable space)");
-        plugin.getLogger().info("🧱 Frame outer size: " + (width + 2) + "w × " + (height + 2) + "h (including obsidian)");
-        plugin.getLogger().info("🧭 Orientation axis: " + axis.name());
-        plugin.getLogger().info("🔲 Frame corner coordinates:");
-        plugin.getLogger().info("  ◼ Bottom-Left : " + formatLoc(bottomLeft));
-        plugin.getLogger().info("  ◻ Bottom-Right: " + formatLoc(bottomRight));
-        plugin.getLogger().info("  ◽ Top-Left    : " + formatLoc(topLeft));
-        plugin.getLogger().info("  ◼ Top-Right   : " + formatLoc(topRight));
+        plugin.debugLog("✅ [SCAN] Portal interior size: " + width + "w × " + height + "h (usable space)");
+        plugin.debugLog("🧱 Frame outer size: " + (width + 2) + "w × " + (height + 2) + "h (including obsidian)");
+        plugin.debugLog("🧭 Orientation axis: " + axis.name());
+        plugin.debugLog("🔲 Frame corner coordinates:");
+        plugin.debugLog("  ◼ Bottom-Left : " + formatLoc(bottomLeft));
+        plugin.debugLog("  ◻ Bottom-Right: " + formatLoc(bottomRight));
+        plugin.debugLog("  ◽ Top-Left    : " + formatLoc(topLeft));
+        plugin.debugLog("  ◼ Top-Right   : " + formatLoc(topRight));
 
-        plugin.getLogger().info("🟪 Portal blocks found: " + portalCount);
-        plugin.getLogger().info("💎 Diamond corners: " + diamonds);
+        plugin.debugLog("🟪 Portal blocks found: " + portalCount);
+        plugin.debugLog("💎 Diamond corners: " + diamonds);
 
         for (Player p : world.getPlayers()) {
             showPortalScanVisualization(p, bottomLeft, width, height, axis);
         }
 
         if (bottomLeft == null || bottomRight == null || topLeft == null || topRight == null) {
-            plugin.getLogger().warning("❌ [SCAN] Failed to determine all frame corners");
+            plugin.debugLog("❌ [SCAN] Failed to determine all frame corners");
             return null;
         }
         return new PortalFrame(width + 2, height + 2, axis.name(),
@@ -2858,7 +2780,7 @@ public class PortalManager {
             world.spawnParticle(Particle.END_ROD, loc.clone().add(0.5, 0.5, 0.5), 3, 0, 0, 0, 0);
         }
 
-        plugin.getLogger().info("🎆 [SCAN] Portal preview rendered.");
+        plugin.debugLog("🎆 [SCAN] Portal preview rendered.");
     }
 
     private boolean isFrame(Material type) {
@@ -3014,9 +2936,9 @@ public class PortalManager {
                             portal.getBlock().setType(Material.NETHER_PORTAL);
                         }
                     }
-                    plugin.getLogger().info("⚠️ Missing portal blocks — filled manually.");
+                    plugin.debugLog("⚠️ Missing portal blocks — filled manually.");
                 } else {
-                    plugin.getLogger().info("✅ Portal verified: " + verified + " NETHER_PORTAL blocks found.");
+                    plugin.debugLog("✅ Portal verified: " + verified + " NETHER_PORTAL blocks found.");
                 }
             }, 5L); // ⏱ Slightly increased delay to let FAWE complete
 
@@ -3765,7 +3687,7 @@ public class PortalManager {
                     if (min != null && max != null) {
                         DetectionRegion region = new DetectionRegion(min, max, linkCode);
                         detectionRegions.add(region);
-                        plugin.getLogger().info("🟩 Loaded region from file: " + formatLoc(min) + " → " + formatLoc(max));
+                        plugin.debugLog("🟩 Loaded region from file: " + formatLoc(min) + " → " + formatLoc(max));
                     }
                 }
             }
@@ -3774,24 +3696,24 @@ public class PortalManager {
     
     public void clearQueuedPlayerConfigs() {
         queuedPlayerConfigs.clear();
-        plugin.getLogger().info("🧹 Cleared all queued player configs from memory.");
+        plugin.debugLog("🧹 Cleared all queued player configs from memory.");
     }
 
     public void reloadPortalMap() {
         File file = new File(plugin.getDataFolder(), "portalMap.yml");
         if (!file.exists()) {
-            plugin.getLogger().warning("⚠ portalMap.yml not found — creating a new one.");
+            plugin.debugLog("⚠ portalMap.yml not found — creating a new one.");
             try {
                 file.createNewFile();
             } catch (IOException e) {
-                plugin.getLogger().severe("❌ Failed to create portalMap.yml");
+                plugin.debugLog("❌ Failed to create portalMap.yml");
                 e.printStackTrace();
                 return;
             }
         }
 
         this.globalPortalMap = YamlConfiguration.loadConfiguration(file);
-        plugin.getLogger().info("🔄 Reloaded portalMap.yml into memory.");
+        plugin.debugLog("🔄 Reloaded portalMap.yml into memory.");
     }
 
     private final Map<UUID, Boolean> exitCooldown = new HashMap<>();
@@ -3811,16 +3733,16 @@ public class PortalManager {
     
     public PortalFrame getFrameByLinkCode(String linkCode, World world) {
         if (linkCode == null || world == null) {
-            plugin.getLogger().warning("⚠ getFrameByLinkCode was called with null arguments.");
+            plugin.debugLog("⚠ getFrameByLinkCode was called with null arguments.");
             return null;
         }
 
         String worldName = world.getName();
-        plugin.getLogger().info("[FRAME-DEBUG] Looking up frame for linkCode: " + linkCode + " in world: " + worldName);
+        plugin.debugLog("[FRAME-DEBUG] Looking up frame for linkCode: " + linkCode + " in world: " + worldName);
 
         YamlConfiguration portalMap = getPortalMap();
         if (!portalMap.contains(linkCode + ".owner")) {
-            plugin.getLogger().warning("⚠ LinkCode " + linkCode + " does not exist in portalMap.");
+            plugin.debugLog("⚠ LinkCode " + linkCode + " does not exist in portalMap.");
             return null;
         }
 
@@ -3829,14 +3751,14 @@ public class PortalManager {
 
         String base = "links." + linkCode + "." + worldName + ".frame";
         if (!config.contains(base + ".orientation")) {
-            plugin.getLogger().warning("⚠ Frame orientation missing at: " + base + ".orientation");
+            plugin.debugLog("⚠ Frame orientation missing at: " + base + ".orientation");
             return null;
         }
 
         String orientation = config.getString(base + ".orientation");
         ConfigurationSection cornerSec = config.getConfigurationSection(base + ".corner");
         if (cornerSec == null) {
-            plugin.getLogger().warning("⚠ Frame corner section missing at: " + base + ".corner");
+            plugin.debugLog("⚠ Frame corner section missing at: " + base + ".corner");
             return null;
         }
 
@@ -3846,11 +3768,11 @@ public class PortalManager {
         String rawTL = cornerSec.getString("Top-Left");
         String rawTR = cornerSec.getString("Top-Right");
 
-        plugin.getLogger().info("[FRAME-DEBUG] Parsed corner strings:");
-        plugin.getLogger().info("  Bottom-Left: " + rawBL);
-        plugin.getLogger().info("  Bottom-Right: " + rawBR);
-        plugin.getLogger().info("  Top-Left: " + rawTL);
-        plugin.getLogger().info("  Top-Right: " + rawTR);
+        plugin.debugLog("[FRAME-DEBUG] Parsed corner strings:");
+        plugin.debugLog("  Bottom-Left: " + rawBL);
+        plugin.debugLog("  Bottom-Right: " + rawBR);
+        plugin.debugLog("  Top-Left: " + rawTL);
+        plugin.debugLog("  Top-Right: " + rawTR);
 
         Location bottomLeft = parseLocationString(world, rawBL);
         Location bottomRight = parseLocationString(world, rawBR);
@@ -3858,7 +3780,7 @@ public class PortalManager {
         Location topRight = parseLocationString(world, rawTR);
 
         if (bottomLeft == null || bottomRight == null || topLeft == null || topRight == null) {
-            plugin.getLogger().warning("⚠ One or more portal corners could not be parsed for linkCode: " + linkCode);
+            plugin.debugLog("⚠ One or more portal corners could not be parsed for linkCode: " + linkCode);
             return null;
         }
 
@@ -3872,8 +3794,8 @@ public class PortalManager {
             height = Math.abs(topLeft.getBlockY() - bottomLeft.getBlockY()) + 1;
         }
 
-        plugin.getLogger().info("[FRAME-DEBUG] Final frame: " + width + "x" + height + " (" + orientation + ")");
-        plugin.getLogger().info("[FRAME-DEBUG] Frame BL location: " + bottomLeft);
+        plugin.debugLog("[FRAME-DEBUG] Final frame: " + width + "x" + height + " (" + orientation + ")");
+        plugin.debugLog("[FRAME-DEBUG] Frame BL location: " + bottomLeft);
 
         return new PortalFrame(width, height, orientation, bottomLeft, bottomRight, topLeft, topRight, new ArrayList<>());
     }
@@ -3888,7 +3810,7 @@ public class PortalManager {
             double z = Double.parseDouble(parts[2].trim());
             return new Location(world, x, y, z);
         } catch (Exception e) {
-            plugin.getLogger().warning("⚠ Failed to parse location string: " + raw);
+            plugin.debugLog("⚠ Failed to parse location string: " + raw);
             return null;
         }
     }
@@ -3938,34 +3860,43 @@ public class PortalManager {
         return null;
     }
 
+    public Location getLinkBlockLocation(UUID owner, String worldName) {
+        YamlConfiguration config = getOrCreatePlayerConfig(owner);
+        ConfigurationSection links = config.getConfigurationSection("links");
+        if (links == null) return null;
+
+        List<Location> linkBlockPortals = new ArrayList<>();
+        for (String code : links.getKeys(false)) {
+            ConfigurationSection linkSection = links.getConfigurationSection(code);
+            if (linkSection == null) continue;
+
+            if (linkSection.getBoolean("diamondoverride", false)) {
+                ConfigurationSection worldSection = linkSection.getConfigurationSection(worldName);
+                if (worldSection != null) {
+                    Location loc = loadUniversalLocation(worldSection.getConfigurationSection("location"), Bukkit.getWorld(worldName));
+                    if (loc != null) {
+                        linkBlockPortals.add(loc);
+                    }
+                }
+            }
+        }
+
+        if (linkBlockPortals.isEmpty()) {
+            return null;
+        }
+
+        if (linkBlockPortals.size() == 1) {
+            return linkBlockPortals.get(0);
+        }
+
+        return linkBlockPortals.get(plugin.getRandom().nextInt(linkBlockPortals.size()));
+    }
+
 
     private Location getLocationFromSection(World world, ConfigurationSection sec) {
         if (sec == null || world == null) return null;
         return new Location(world, sec.getDouble("x"), sec.getDouble("y"), sec.getDouble("z"));
     }
-    /*public String getOrCreateLinkCode(String playerName) {
-        if (playerName == null) return null;
-
-        UUID uuid = getUUIDFromName(playerName);
-        if (uuid == null) return null;
-
-        YamlConfiguration config = getOrCreatePlayerConfig(uuid);
-        ConfigurationSection links = config.getConfigurationSection("links");
-
-        if (links != null && !links.getKeys(false).isEmpty()) {
-            for (String existingCode : links.getKeys(false)) {
-                return existingCode; // Return first existing linkCode
-            }
-        }
-
-        // Ensure new code is unused
-        String newCode;
-        do {
-            newCode = generateLinkCode();
-        } while (config.contains("links." + newCode) || getPortalMap().contains(newCode));
-
-        return newCode;
-    }*/
 
     public String generateUniqueLinkCode(UUID uuid) {
         YamlConfiguration config = getOrCreatePlayerConfig(uuid);
@@ -3980,9 +3911,6 @@ public class PortalManager {
 
         return code;
     }
-    /*public String generateLinkCode() {
-        return Integer.toHexString((int) (Math.random() * 0xFFFFFF)).toLowerCase();
-    }*/
     public String getFirstWorldForLink(String linkCode, UUID uuid) {
     	File file = new File(plugin.getDataFolder(), "playerdata/" + uuid.toString() + ".yml");
         if (!file.exists()) return null;
@@ -4059,7 +3987,7 @@ public class PortalManager {
 
                 World world = Bukkit.getWorld(worldName);
                 if (world == null) {
-                    plugin.getLogger().warning("⚠ World not found for portal region: " + worldName);
+                    plugin.debugLog("⚠ World not found for portal region: " + worldName);
                     continue;
                 }
 
@@ -4067,7 +3995,7 @@ public class PortalManager {
                 Location max = parseCoord(maxString);
 
                 if (min == null || max == null) {
-                    plugin.getLogger().warning("⚠ Failed to parse interior bounds for link: " + linkCode);
+                    plugin.debugLog("⚠ Failed to parse interior bounds for link: " + linkCode);
                     continue;
                 }
 
@@ -4077,7 +4005,7 @@ public class PortalManager {
                 DetectionRegion region = new DetectionRegion(min, max, linkCode);
                 detectionRegions.add(region);
 
-                plugin.getLogger().info("✅ Reloaded portal zone for " + linkCode + " in world " + worldName);
+                plugin.debugLog("✅ Reloaded portal zone for " + linkCode + " in world " + worldName);
             }
         }
     }
@@ -4104,7 +4032,7 @@ public class PortalManager {
         String portalB = playerData.getString("links." + linkCode + ".portalB");
 
         if (portalA == null || portalB == null) {
-            plugin.getLogger().warning("⚠️ Missing portalA or portalB for linkCode: " + linkCode);
+            plugin.debugLog("⚠️ Missing portalA or portalB for linkCode: " + linkCode);
             return;
         }
 
@@ -4114,24 +4042,24 @@ public class PortalManager {
         } else if (currentWorldName.equals(portalB)) {
             destinationWorld = portalA;
         } else {
-            plugin.getLogger().warning("⚠️ Current world not listed in portalA or portalB for linkCode: " + linkCode);
+            plugin.debugLog("⚠️ Current world not listed in portalA or portalB for linkCode: " + linkCode);
             return;
         }
 
         String baseKey = "links." + linkCode + "." + destinationWorld + ".location";
 
         if (!playerData.contains(baseKey)) {
-            plugin.getLogger().warning("⚠️ No saved return location for player in destination world: " + destinationWorld + " under linkCode: " + linkCode);
-            plugin.getLogger().warning("🔍 baseKey: " + baseKey);
+            plugin.debugLog("⚠️ No saved return location for player in destination world: " + destinationWorld + " under linkCode: " + linkCode);
+            plugin.debugLog("🔍 baseKey: " + baseKey);
 
             ConfigurationSection linkSection = playerData.getConfigurationSection("links." + linkCode);
             if (linkSection != null) {
-                plugin.getLogger().info("📖 Available worlds under link: " + linkSection.getKeys(false));
+                plugin.debugLog("📖 Available worlds under link: " + linkSection.getKeys(false));
                 ConfigurationSection destSection = linkSection.getConfigurationSection(destinationWorld);
                 if (destSection != null) {
-                    plugin.getLogger().info("📦 Keys under destination world: " + destSection.getKeys(false));
+                    plugin.debugLog("📦 Keys under destination world: " + destSection.getKeys(false));
                 } else {
-                    plugin.getLogger().warning("❌ Could not find section: " + destinationWorld);
+                    plugin.debugLog("❌ Could not find section: " + destinationWorld);
                 }
             }
             return;
@@ -4140,10 +4068,10 @@ public class PortalManager {
         Location destination = deserializeLocation(playerData, baseKey);
 
         if (destination != null) {
-            plugin.getLogger().info("🌍 Current world: " + currentWorldName);
-            plugin.getLogger().info("🧭 Destination world: " + destinationWorld);
-            plugin.getLogger().info("🔗 linkCode: " + linkCode);
-            plugin.getLogger().info("🚀 Teleporting player " + player.getName() + " using linkCode: " + linkCode);
+            plugin.debugLog("🌍 Current world: " + currentWorldName);
+            plugin.debugLog("🧭 Destination world: " + destinationWorld);
+            plugin.debugLog("🔗 linkCode: " + linkCode);
+            plugin.debugLog("🚀 Teleporting player " + player.getName() + " using linkCode: " + linkCode);
 
             try {
                 player.getClass().getMethod("teleportAsync", Location.class); // reflection test
@@ -4154,23 +4082,22 @@ public class PortalManager {
             }
 
         } else {
-            plugin.getLogger().warning("❌ Failed to deserialize destination for linkCode: " + linkCode);
+            plugin.debugLog("❌ Failed to deserialize destination for linkCode: " + linkCode);
         }
     }
 
     public Location deserializeLocation(YamlConfiguration config, String path) {
         if (!config.contains(path)) return null;
 
-        //World world = Bukkit.getWorld(config.getString(path + ".world"));
         String worldName = config.getString(path + ".world");
         if (worldName == null) {
-            plugin.getLogger().severe("❌ deserializeLocation() failed — world name is null at: " + path);
+            plugin.debugLog("❌ deserializeLocation() failed — world name is null at: " + path);
             return null;
         }
 
         World world = Bukkit.getWorld(worldName);
         if (world == null) {
-            plugin.getLogger().severe("❌ deserializeLocation() failed — world '" + worldName + "' is not loaded.");
+            plugin.debugLog("❌ deserializeLocation() failed — world '" + worldName + "' is not loaded.");
             return null;
         }
 
@@ -4216,7 +4143,7 @@ public class PortalManager {
 	        try {
 	            org.bukkit.World destW = org.bukkit.Bukkit.getWorld(destWorldName);
 	            if (destW == null) {
-	                plugin.getLogger().warning("[GNP] Destination world not loaded: " + destWorldName);
+	                plugin.debugLog("[GNP] Destination world not loaded: " + destWorldName);
 	                return;
 	            }
 	
@@ -4257,7 +4184,7 @@ public class PortalManager {
 	                formed = findNearbyPortalBlock(destCorner, 4);
 	            }
 	            if (formed == null) {
-	                plugin.getLogger().warning("[GNP] Could not verify B portal for " + linkCode
+	                plugin.debugLog("[GNP] Could not verify B portal for " + linkCode
 	                        + " in " + destW.getName());
 	                return;
 	            }
@@ -4266,7 +4193,7 @@ public class PortalManager {
 	            java.util.Set<org.bukkit.Location> visited = new java.util.HashSet<>();
 	            PortalFrame newFrame = scanFullPortalFrame(formed, visited, false, false);
 	            if (newFrame == null) {
-	                plugin.getLogger().warning("[GNP] B-side scan failed after creation for " + linkCode);
+	                plugin.debugLog("[GNP] B-side scan failed after creation for " + linkCode);
 	                return;
 	            }
 	
@@ -4274,11 +4201,11 @@ public class PortalManager {
 	            registerDetectionFor(linkCode, uuid, newFrame);
 	
 	            // (Removed addPortalLinkToMap — undefined / redundant)
-	            plugin.getLogger().info("✅ [PAIR] Portal-B registered for " + linkCode
+	            plugin.debugLog("✅ [PAIR] Portal-B registered for " + linkCode
 	                    + " at " + formatLoc(newFrame.bottomLeft));
 	
 	        } catch (Throwable t) {
-	            plugin.getLogger().warning("[GNP] requestPairedPortalBuild failed: " + t.getMessage());
+	            plugin.debugLog("[GNP] requestPairedPortalBuild failed: " + t.getMessage());
 	            t.printStackTrace();
 	        } finally {
 	            buildInFlight.remove(buildKey);
@@ -4307,13 +4234,13 @@ public class PortalManager {
 	 public void onWorldLoadedKickDeferredBuilds(String worldNameJustLoaded) {
 	     var list = deferred.remove(worldNameJustLoaded);
 	     if (list == null || list.isEmpty()) return;
-	     plugin.getLogger().info("[GNP] Running " + list.size() + " deferred paired builds for world " + worldNameJustLoaded);
+	     plugin.debugLog("[GNP] Running " + list.size() + " deferred paired builds for world " + worldNameJustLoaded);
 	     for (DeferredBuild db : list) {
 	         org.bukkit.Bukkit.getScheduler().runTask(plugin, () -> {
 	             try {
 	            	 forceGeneratePairedPortal(db.linkCode, db.originWorld, db.uuid, db.frame);
 	             } catch (Exception ex) {
-	                 plugin.getLogger().warning("[GNP] Deferred build failed (" + db.linkCode + "): " + ex.getMessage());
+	                 plugin.debugLog("[GNP] Deferred build failed (" + db.linkCode + "): " + ex.getMessage());
 	                 ex.printStackTrace();
 	             }
 	         });
@@ -4368,7 +4295,7 @@ public class PortalManager {
 		        java.io.File file = new java.io.File(new java.io.File(plugin.getDataFolder(), "playerdata"), uuid.toString() + ".yml");
 		        cfg.save(file);
 		    } catch (java.io.IOException e) {
-		        plugin.getLogger().warning("[GNP] Failed to save A-side interior for " + linkCode + ": " + e.getMessage());
+		        plugin.debugLog("[GNP] Failed to save A-side interior for " + linkCode + ": " + e.getMessage());
 		    }
 
 		    addPortalToGlobalMap(linkCode, uuid);
@@ -4408,7 +4335,7 @@ public class PortalManager {
 	             if (job == null) { gnpWorkerRunning = false; break; }
 	         }
 	         try { job.run(); } catch (Throwable t) {
-	             plugin.getLogger().warning("[GNP] Queue job failed: " + t.getMessage());
+	             plugin.debugLog("[GNP] Queue job failed: " + t.getMessage());
 	             t.printStackTrace();
 	         }
 	     }
@@ -4507,39 +4434,6 @@ public class PortalManager {
 	    return new org.bukkit.Location(destWorld, bx, destY, bz);
 	}
 	// === INSERT (END)
-	// === ADD: hasMarkerInFrame (place this immediately ABOVE the final closing brace of PortalManager)
-	public boolean hasMarkerInFrame(String linkCode, PortalFrame frame) {
-	    World world = frame.bottomLeft.getWorld();
-	    if (world == null) return false;
-
-	    BoundingBox box = BoundingBox.of(frame.bottomLeft, frame.topRight).expand(0.5);
-	    int minX = Math.min(frame.bottomLeft.getBlockX(), frame.topRight.getBlockX());
-	    int maxX = Math.max(frame.bottomLeft.getBlockX(), frame.topRight.getBlockX());
-	    int minY = Math.min(frame.bottomLeft.getBlockY(), frame.topRight.getBlockY());
-	    int maxY = Math.max(frame.bottomLeft.getBlockY(), frame.topRight.getBlockY());
-	    int minZ = Math.min(frame.bottomLeft.getBlockZ(), frame.topRight.getBlockZ());
-	    int maxZ = Math.max(frame.bottomLeft.getBlockZ(), frame.topRight.getBlockZ());
-
-	    for (org.bukkit.entity.Entity e : world.getNearbyEntities(box)) {
-	        if (!(e instanceof org.bukkit.entity.ArmorStand stand)) continue;
-	        if (!stand.getScoreboardTags().contains("gnp_marker")) continue;
-
-	        String code = stand.getPersistentDataContainer().get(
-	            new org.bukkit.NamespacedKey(plugin, "linkCode"),
-	            org.bukkit.persistence.PersistentDataType.STRING
-	        );
-	        if (!linkCode.equalsIgnoreCase(code)) continue;
-
-	        org.bukkit.Location loc = stand.getLocation();
-	        int x = loc.getBlockX(), y = loc.getBlockY(), z = loc.getBlockZ();
-	        if (x >= minX && x <= maxX && y >= minY && y <= maxY && z >= minZ && z <= maxZ) {
-	            return true;
-	        }
-	    }
-	    return false;
-	}
-	// === END ADD
-
 	// # NEW: Public tight-range portal finder used by PortalManager & PortalListener
 	public @org.jetbrains.annotations.Nullable org.bukkit.Location findNearbyPortalBlockTight(
 	        org.bukkit.Location center, int maxDistanceBlocks) {
