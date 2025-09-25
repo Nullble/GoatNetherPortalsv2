@@ -1,0 +1,77 @@
+# GoatNetherPortals Configuration
+
+# ─────────────────────────────────────────────
+# Worlds listed here will prevent players from
+# creating NEW return links to them.
+# 
+# Meaning: If a player originally entered from
+# one of these worlds, the plugin will ALWAYS
+# return them to that world regardless of where
+# a new portal is built.
+# 
+# This prevents portal override chaining and 
+# ensures fixed return destinations.
+# ─────────────────────────────────────────────
+
+forceReturnWorlds:
+  - world
+  - survival
+  # - any_custom_world_name_here
+
+requirePlotsInWorlds:
+  - Overworld
+
+  
+# ─────────────────────────────────────────────
+# Advanced Features (placeholders for expansion)
+# ─────────────────────────────────────────────
+
+# Block new portal creation near owned portals
+protectExistingPortals: false
+
+force-generate-arrival-portals: true
+
+# Enable portal ownership tagging for debugging/admin tools
+enableOwnershipTags: false
+
+# Distance (in blocks) used to determine "nearby" portal for deletion or reuse
+portalSearchRadius: 50
+
+# Enable logging of portal saves and recovery
+verboseLogging: true
+
+copy-allowed-frame-blocks:
+  - OBSIDIAN
+  - NETHER_PORTAL
+
+sensitive-blocks:
+  - CHEST
+  - FURNACE
+  - CRAFTING_TABLE
+  - BARREL
+  - GLASS
+  - GLOWSTONE
+  - ANVIL
+  - ENCHANTING_TABLE
+  - BOOKSHELF
+  - LANTERN
+  - ITEM_FRAME
+  - PAINTING
+  - RED_BED
+  - BLUE_BED
+  - BLACK_BED
+  - GREEN_BED
+  - WHITE_BED
+  - BROWN_BED
+  - GRAY_BED
+  - CYAN_BED
+  - LIGHT_BLUE_BED
+  - LIGHT_GRAY_BED
+  - LIME_BED
+  - MAGENTA_BED
+  - ORANGE_BED
+  - PINK_BED
+  - PURPLE_BED
+  - YELLOW_BED
+  - SIGN
+  - WALL_SIGN

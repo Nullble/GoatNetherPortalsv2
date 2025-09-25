@@ -1,0 +1,26 @@
+name: GoatNetherPortals
+version: 1.0
+main: com.nullble.goatnetherportals.GoatNetherPortals
+api-version: 1.20
+depend: [Multiverse-Core, NulZone]
+
+commands:
+  gnp:
+    description: Main GoatNetherPortals command
+    usage: /gnp <portdelete|confirmdelete|cleanup|cleanupself|info|help|inspect|resyncmap|validate|link|unlink|reload|debug|togglemarkers|cleanupmarkers>
+    permission: goatnetherportals.use
+    aliases: [gnportal, portals]
+
+  portalreset:
+    description: Clears your saved portal link
+    usage: /portalreset
+    permission: goatnetherportals.reset
+    
+permissions:
+  goatnetherportals.use:
+    description: Allows player to manage their own portal links
+    default: true
+
+  goatnetherportals.admin:
+    description: Allows deletion of other players' portals
+    default: op
