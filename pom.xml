@@ -55,9 +55,9 @@
 
     <!-- NulZone from GitHub via JitPack (branch main) -->
     <dependency>
-      <groupId>com.github.Nullble</groupId>
+      <groupId>com.nullble</groupId>
       <artifactId>NulZone</artifactId>
-      <version>main-SNAPSHOT</version>
+      <version>3.6.1</version>
       <scope>provided</scope>
     </dependency>
 
