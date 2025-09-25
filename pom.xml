@@ -55,10 +55,9 @@
 
     <!-- NulZone from GitHub via JitPack (branch main) -->
     <dependency>
-      <groupId>com.nullble</groupId>
+      <groupId>com.github.Nullble</groupId>
       <artifactId>NulZone</artifactId>
-      <version>3.6.1</version>
-      <scope>provided</scope>
+      <version>Tag</version>
     </dependency>
 
     <!-- GriefDefender hooks adapter -->
