@@ -92,24 +92,6 @@ public class GoatNetherPortals extends JavaPlugin {
         //getServer().getPluginManager().registerEvents(new PortalEntryListener(this), this);
 		// ✅ Register portal region listener
 
-        // ✅ /portalreset command
-        getCommand("portalreset").setExecutor((sender, command, label, args) -> {
-            if (!(sender instanceof Player player)) {
-                sender.sendMessage("§cOnly players can use this command.");
-                return true;
-            }
-
-            if (!sender.hasPermission("goatnetherportals.reset")) {
-                sender.sendMessage("§cYou don’t have permission to use this.");
-                return true;
-            }
-
-            UUID uuid = portalManager.getUUIDFromName(player.getName());
-            portalManager.clearPortal(uuid);
-
-            sender.sendMessage("§aYour personal portal link has been reset.");
-            return true;
-        });
 
         // ✅ /gnp command handler
         getCommand("gnp").setExecutor(new GNPCommand(this));
