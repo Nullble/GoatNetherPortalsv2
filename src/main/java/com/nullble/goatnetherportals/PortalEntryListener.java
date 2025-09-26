@@ -50,53 +50,18 @@ public class PortalEntryListener implements Listener {
     @EventHandler
     public void onPlayerMove(PlayerMoveEvent event) {
         Location to = event.getTo();
-        if (to == null || event.getFrom().getBlock().equals(to.getBlock())) return;
-
-        Player player = event.getPlayer();
-        UUID uuid = player.getUniqueId();
-        String currentCode = plugin.getPortalManager().getPendingLink(uuid);
-
-        List<DetectionRegion> regions = plugin.getPortalManager().getDetectionRegions();
-        if (regions.isEmpty()) return;
-
-        boolean insideAny = false;
-        for (DetectionRegion region : regions) {
-            if (region.contains(to)) {
-                String newCode = region.getLinkCode();
-                insideAny = true;
-
-                if (currentCode == null || !currentCode.equals(newCode)) {
-                	plugin.getPortalManager().storePendingLink(uuid, newCode);
-                	plugin.getLogger().info("🌀 Player " + player.getName() + " entered portal zone: " + newCode);
-                	player.sendMessage("§b[Portal Zone] Entered: §e" + newCode);
-
-                	// 🧠 Store linkCode for onPortalUse() to retrieve
-                	plugin.getPortalManager().setRecentPortalEntry(uuid, newCode);
-
-                }
-
-                return; // stop checking further regions once match found
-            }
+        if (to == null || event.getFrom().getBlock().equals(to.getBlock())) {
+            return;
         }
 
-        // 🕓 Exit detected logic — only trigger once
-        if (!insideAny && currentCode != null && !plugin.getPortalManager().isExitCooldownActive(uuid)) {
-            plugin.getPortalManager().markExitCooldown(uuid); // ⏱ Set 1-time flag
+        Player player = event.getPlayer();
+        List<DetectionRegion> regions = plugin.getPortalManager().getDetectionRegions();
 
-            plugin.getLogger().info("⏳ Player " + player.getName() + " exited portal zone: " + currentCode);
-            player.sendMessage("§e[Portal Zone] Exit detected. Timeout started...");
-
-            Bukkit.getScheduler().runTaskLater(plugin, () -> {
-                String stillCode = plugin.getPortalManager().getPendingLink(uuid);
-
-                if (stillCode != null && stillCode.equals(currentCode)) {
-                    plugin.getPortalManager().clearPendingLink(uuid);
-                    plugin.getLogger().info("❌ Portal zone cleared for: " + player.getName());
-                    player.sendMessage("§7[Portal Zone] Cleared after 5s timeout.");
-                }
-
-                plugin.getPortalManager().clearExitCooldown(uuid); // 🧼 Reset flag after timeout
-            }, 20 * 5);
+        for (DetectionRegion region : regions) {
+            if (region.contains(to)) {
+                plugin.getPortalManager().setRecentPortalEntry(player.getUniqueId(), region.getLinkCode());
+                return;
+            }
         }
     }
 

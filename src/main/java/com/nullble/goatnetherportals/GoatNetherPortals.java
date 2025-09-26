@@ -17,14 +17,18 @@ import org.bukkit.entity.Player;
 import org.bukkit.persistence.PersistentDataContainer;
 import org.bukkit.persistence.PersistentDataType;
 import org.bukkit.plugin.java.JavaPlugin;
+import org.bukkit.plugin.RegisteredServiceProvider;
 
 import com.nullble.goatnetherportals.GNPCommand;
+
+import net.luckperms.api.LuckPerms;
 
 
 public class GoatNetherPortals extends JavaPlugin {
 
     private static GoatNetherPortals instance;
     private PortalManager portalManager;
+    private LuckPerms luckPerms;
     private PendingDeleteManager deleteManager;
     private File globalPortalMapFile;
     private YamlConfiguration globalPortalMap;
@@ -41,6 +45,12 @@ public class GoatNetherPortals extends JavaPlugin {
     @Override
     public void onEnable() {
         instance = this;
+
+        // ✅ Setup LuckPerms API
+        RegisteredServiceProvider<LuckPerms> provider = Bukkit.getServicesManager().getRegistration(LuckPerms.class);
+        if (provider != null) {
+            luckPerms = provider.getProvider();
+        }
 
         // ✅ Ensure plugin folder exists
         if (!getDataFolder().exists()) {
@@ -124,6 +134,10 @@ public class GoatNetherPortals extends JavaPlugin {
 
     public PortalManager getPortalManager() {
         return portalManager;
+    }
+
+    public LuckPerms getLuckPerms() {
+        return this.luckPerms;
     }
 
     public PendingDeleteManager getDeleteManager() {
