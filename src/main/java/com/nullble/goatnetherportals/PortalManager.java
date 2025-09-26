@@ -33,7 +33,7 @@ import org.bukkit.block.TileState;
 import org.bukkit.command.CommandSender;
 import org.bukkit.configuration.ConfigurationSection;
 import org.bukkit.configuration.file.YamlConfiguration;
-import org.bukkit.craftbukkit.CraftWorld;
+//import org.bukkit.craftbukkit.CraftWorld;
 import org.bukkit.entity.ArmorStand;
 import org.bukkit.entity.Entity;
 import org.bukkit.entity.Player;
@@ -47,7 +47,7 @@ import com.griefdefender.api.GriefDefender;
 import com.griefdefender.api.claim.Claim;
 import com.griefdefender.lib.flowpowered.math.vector.Vector3i;
 import com.jeff_media.customblockdata.CustomBlockData;
-import com.nullble.nulzone.NulZone;
+//import com.nullble.nulzone.NulZone;
 import com.nullble.goatnetherportals.DetectionRegion;
 import com.nullble.goatnetherportals.PortalManager.PortalFrame;
 import com.sk89q.worldedit.EditSession;
@@ -63,14 +63,18 @@ import com.sk89q.worldedit.session.ClipboardHolder;
 import com.sk89q.worldedit.world.block.BaseBlock;
 import com.sk89q.worldedit.world.block.BlockTypes;
 
-import net.minecraft.core.BlockPos;
-import net.minecraft.core.Direction;
-import net.minecraft.world.level.Level;
-import net.minecraft.world.level.block.Blocks;
-import net.minecraft.world.level.portal.PortalShape;
+//import net.minecraft.core.BlockPos;
+//import net.minecraft.core.Direction;
+//import net.minecraft.world.level.Level;
+//import net.minecraft.world.level.block.Blocks;
+//import net.minecraft.world.level.portal.PortalShape;
 import org.jetbrains.annotations.Nullable;
 
 public class PortalManager {
+
+    public enum Axis {
+        X, Z
+    }
 
     private final GoatNetherPortals plugin;
     private final File dataFolder;
@@ -85,6 +89,9 @@ public class PortalManager {
     private final java.util.Set<String> spawnedMarkers =
             java.util.Collections.newSetFromMap(new java.util.concurrent.ConcurrentHashMap<>());
 
+    private final Map<String, Long> recentPortalCooldowns = new HashMap<>();
+    private final Map<Location, String> portalEntryZones = new HashMap<>();
+    private final Set<String> recentScanLocations = new HashSet<>();
     private final Map<UUID, String> playerPendingLinks = new HashMap<>();
     private final List<DetectionRegion> detectionRegions = new ArrayList<>();
     private final Queue<MarkerTask> markerQueue = new LinkedList<>();
@@ -332,19 +339,21 @@ public class PortalManager {
         return false;
     }
     private boolean isInsideNulZone(Location loc) {
-        if (loc == null || loc.getWorld() == null) return false;
+        return false;
+        /*if (loc == null || loc.getWorld() == null) return false;
 
         NulZone nulZone = (NulZone) Bukkit.getPluginManager().getPlugin("NulZone");
         if (nulZone == null || !nulZone.isEnabled()) return false;
 
         return nulZone.getZoneManager().getMatchingZone(
             loc.getWorld().getName(), loc.getBlockX(), loc.getBlockZ()
-        ) != null;
+        ) != null;*/
     }
     
     
     
     public void saveLink(@Nullable String playerName, Location loc, boolean isReturn, @Nullable String linkCode, @Nullable PortalFrame frameOverride) {
+        plugin.debugLog("saveLink called.");
     	UUID uuid = (playerName != null) ? getUUIDFromName(playerName) : SERVER_UUID;
 
         
@@ -372,7 +381,11 @@ public class PortalManager {
 
 
         PortalFrame original = (frameOverride != null) ? frameOverride : scanFullPortalFrame(loc);
-        if (original == null) return;
+        if (original == null) {
+            plugin.debugLog("Original frame is null, returning.");
+            return;
+        }
+        plugin.debugLog("Original frame scanned successfully.");
 
         // Defensive copy
         PortalFrame frame = new PortalFrame(
@@ -406,6 +419,7 @@ public class PortalManager {
 
         String orientation = frame.orientation;
         Location frameCorner = frame.bottomLeft;
+        plugin.debugLog("Frame orientation: " + orientation + ", corner: " + frameCorner);
 
         String locKey = "portal::" + loc.getWorld().getName() + "::" + loc.getBlockX() + "," + loc.getBlockY() + "," + loc.getBlockZ();
         String playerKey = "player::" + uuid + "::" + worldName;
@@ -431,6 +445,7 @@ public class PortalManager {
             locSection.set("z", loc.getZ());
             locSection.set("yaw", loc.getYaw());
             locSection.set("pitch", loc.getPitch());
+            plugin.debugLog("Saved new location for link: " + linkCode);
         } else {
             plugin.debugLog("🛑 [saveLink] Skipping overwrite of existing location for link: " + linkCode);
         }
@@ -439,11 +454,13 @@ public class PortalManager {
 
         if (hasDiamondInCorners(cornerCheckLoc, frame.width, frame.height, orientation)) {
             config.set("links." + linkCode + ".diamondoverride", true);
+            plugin.debugLog("Diamond override set for link: " + linkCode);
         }
 
 
         if (hasDiamondInCorners(frameCorner, frame.width, frame.height, orientation)) {
             config.set("links." + linkCode + ".diamondoverride", true);
+            plugin.debugLog("Diamond override set for link: " + linkCode);
         }
 
         ConfigurationSection frameSection = worldSection.createSection("frame");
@@ -470,6 +487,7 @@ public class PortalManager {
         } else {
             cornerSection.set("Top-Right", formatCoord(frame.topRight));
         }
+        plugin.debugLog("Saved frame corners.");
 
 /*
         cornerSection.set("Bottom-Left", formatCoord(frame.bottomLeft));
@@ -493,6 +511,7 @@ public class PortalManager {
         ConfigurationSection interiorSection = worldSection.createSection("interior");
         interiorSection.set("min", formatCoord(expandedMin));
         interiorSection.set("max", formatCoord(expandedMax));
+        plugin.debugLog("Saved interior section.");
      // ✅ Save marker info
         Location markerLoc = frame.cornerMarker != null ? frame.cornerMarker : loc.clone().add(0.5, 1.5, 0.5);
 
@@ -503,6 +522,7 @@ public class PortalManager {
             markerSection.set("z", markerLoc.getZ());
             markerSection.set("corner", formatCoord(frame.bottomLeft));
             markerSection.set("orientation", orientation);
+            plugin.debugLog("Saved marker section.");
         } else {
             plugin.debugLog("❌ markerLoc is NULL — skipping marker save");
         }
@@ -522,10 +542,12 @@ public class PortalManager {
 
      if (dest != null && worldSection.getKeys(false).size() > 0 && worldName.equals(getFirstWorldForLink(linkCode, uuid))) {
          // 🔁 Only allow the *first portal created* to trigger the opposite-world pairing
+         plugin.debugLog("Destination found, forcing paired portal generation.");
          forceGeneratePairedPortal(linkCode, worldName, uuid, frame);
      }
 
         commitQueuedData(uuid);
+        plugin.debugLog("Committed queued data.");
     }
 
     private boolean isCooldownActive(String key, long cooldownMillis) {
@@ -935,8 +957,8 @@ public class PortalManager {
         }
 
         // Attempt to walk back 1 block to reach actual obsidian frame
-        Direction.Axis axis = detectPortalAxis(bottomLeft);
-        if (axis == Direction.Axis.X) {
+        Axis axis = detectPortalAxis(bottomLeft);
+        if (axis == Axis.X) {
             return bottomLeft.clone().add(-1, -1, 0); // frame block WEST-DOWN
         } else {
             return bottomLeft.clone().add(0, -1, -1); // frame block NORTH-DOWN
@@ -950,14 +972,14 @@ public class PortalManager {
                ));
     }
 
-    private Direction.Axis detectPortalAxis(Location loc) {
+    private Axis detectPortalAxis(Location loc) {
         World world = loc.getWorld();
         Block center = world.getBlockAt(loc);
         if (center.getRelative(BlockFace.EAST).getType() == Material.NETHER_PORTAL ||
             center.getRelative(BlockFace.WEST).getType() == Material.NETHER_PORTAL) {
-            return Direction.Axis.X;
+            return Axis.X;
         }
-        return Direction.Axis.Z;
+        return Axis.Z;
     }
 
     public void cleanupGlobalPortalMap(CommandSender sender) {
@@ -1445,7 +1467,11 @@ public class PortalManager {
     }
 
     public void tryAutoRegisterPortal(Player player, Location base, @Nullable PortalFrame preScannedFrame) {
-    	if (base == null || base.getWorld() == null) return;
+        plugin.debugLog("tryAutoRegisterPortal called.");
+	if (base == null || base.getWorld() == null) {
+            plugin.debugLog("Base or world is null, returning.");
+            return;
+        }
 
         //UUID uuid = (player != null) ? player.getUniqueId() : UUID.fromString("00000000-0000-0000-0000-000000000001");
     	UUID uuid = (player != null) ? player.getUniqueId() : SERVER_UUID;
@@ -1472,11 +1498,13 @@ public class PortalManager {
             plugin.debugLog("❌ No valid portal block found near: " + base);
             return;
         }
+        plugin.debugLog("Found valid portal block at: " + portalLoc);
         String linkCode = generateUniqueLinkCode(uuid);
         if (linkCode == null) {
             plugin.debugLog("❌ Failed to generate linkCode");
             return;
         }
+        plugin.debugLog("Generated link code: " + linkCode);
         
         // Store this linkCode immediately to prevent duplicate generation
         playerPendingLinks.put(uuid, linkCode);
@@ -1490,6 +1518,7 @@ public class PortalManager {
             plugin.debugLog("❌ Portal frame scan failed at: " + portalLoc);
             return;
         }
+        plugin.debugLog("Portal frame scanned successfully.");
 
         // 🔗 Generate a new linkCode
         //String linkCode = generateUniqueLinkCode(uuid);
@@ -1511,6 +1540,7 @@ public class PortalManager {
         // 🌍 Reserve opposite world (ensures pairing works)
         String oppositeWorld = plugin.getOppositeWorld(worldName);
         if (oppositeWorld != null) {
+            plugin.debugLog("Reserving opposite world: " + oppositeWorld);
             YamlConfiguration config = getOrCreatePlayerConfig(uuid);
             ConfigurationSection codeSection = config.getConfigurationSection("links." + linkCode);
             if (codeSection == null) codeSection = config.createSection("links." + linkCode);
@@ -1534,9 +1564,11 @@ public class PortalManager {
         }
 
         // 🔁 Generate the paired portal
+        plugin.debugLog("Forcing generation of paired portal.");
         plugin.getPortalManager().forceGeneratePairedPortal(linkCode, worldName, uuid, frame);
 
         // 🧷 Final marker registration & completion
+        plugin.debugLog("Finalizing pair.");
         finalizePair(player, linkCode);
 
         /* 🟢 Feedback
@@ -2203,16 +2235,26 @@ public class PortalManager {
     }
 
     public void forceGeneratePairedPortal(String linkCode, String originWorld, UUID uuid, PortalFrame sourceFrame) {
-
+        plugin.debugLog("forceGeneratePairedPortal called.");
         String destinationWorld = plugin.getOppositeWorld(originWorld);
-        if (destinationWorld == null) return;
+        if (destinationWorld == null) {
+            plugin.debugLog("Destination world is null, returning.");
+            return;
+        }
+        plugin.debugLog("Destination world: " + destinationWorld);
 
         YamlConfiguration config = getOrCreatePlayerConfig(uuid);
         ConfigurationSection linkSection = config.getConfigurationSection("links." + linkCode);
-        if (linkSection == null) return;
+        if (linkSection == null) {
+            plugin.debugLog("Link section is null, returning.");
+            return;
+        }
 
         ConfigurationSection sourceData = linkSection.getConfigurationSection(originWorld);
-        if (sourceData == null) return;
+        if (sourceData == null) {
+            plugin.debugLog("Source data is null, returning.");
+            return;
+        }
 
         Location sourceCorner = sourceFrame.bottomLeft.clone();
         Location rawCorner = sourceCorner.clone();
@@ -2233,9 +2275,11 @@ public class PortalManager {
         } else if (!originWorld.endsWith("_nether") && destinationWorld.endsWith("_nether")) {
             scaledX /= 8; scaledZ /= 8;
         }
+        plugin.debugLog("Scaled coordinates: " + scaledX + ", " + scaledZ);
 
         // Anchor for build
         Location destCorner = new Location(destW, Math.floor(scaledX), rawCorner.getBlockY(), Math.floor(scaledZ));
+        plugin.debugLog("Destination corner: " + destCorner);
 
         // Load the actual destination chunk NOW (after destCorner is known)
         org.bukkit.Chunk destChunk = destCorner.getChunk();
@@ -2248,6 +2292,7 @@ public class PortalManager {
             return;
         }
         destCorner = safeDest;
+        plugin.debugLog("Safe destination found: " + destCorner);
 
         // Bedrock guard
         for (int dx = -1; dx <= 1; dx++) {
@@ -2265,17 +2310,27 @@ public class PortalManager {
         // Avoid stacking on existing portals
         if (isPortalNearby(destCorner, 10)) {
             Location fallback = findSafeNearbyLocation(destCorner, 10);
-            if (fallback != null) destCorner = fallback; else return;
+            if (fallback != null) {
+                destCorner = fallback;
+                plugin.debugLog("Found nearby portal, using fallback location: " + destCorner);
+            } else {
+                plugin.debugLog("Found nearby portal, but no fallback location found. Returning.");
+                return;
+            }
         }
 
         // Clamp extreme Y (safety)
-        if (destCorner.getBlockY() > 250 || destCorner.getBlockY() < 5) destCorner.setY(64);
+        if (destCorner.getBlockY() > 250 || destCorner.getBlockY() < 5) {
+            destCorner.setY(64);
+            plugin.debugLog("Clamped Y to 64.");
+        }
 
         // === REPLACE (BEGIN) — Lines 2351–2365
         // Marker status gates — do NOT return; only decide whether to skip the frame copy.
         // We always proceed to scan + register B in the delayed block.
         boolean skipBuild = false;
         String markerStatus = getMarkerStatus(linkCode, destinationWorld);
+        plugin.debugLog("Marker status: " + markerStatus);
         if ("NORMAL".equalsIgnoreCase(markerStatus)) skipBuild = true;
 
         int width = sourceFrame.orientation.equalsIgnoreCase("X")
@@ -2284,26 +2339,41 @@ public class PortalManager {
         int height = sourceFrame.topLeft.getBlockY() - sourceFrame.bottomLeft.getBlockY() + 1;
 
         if ("FRESH".equalsIgnoreCase(markerStatus)) {
-            if (!portalBlocksMissing(destCorner, width, height, sourceFrame.orientation)) skipBuild = true;
+            if (!portalBlocksMissing(destCorner, width, height, sourceFrame.orientation)) {
+                skipBuild = true;
+                plugin.debugLog("Marker is fresh and portal blocks are not missing, skipping build.");
+            }
         }
         if (areBothMarkersPresent(linkCode, originWorld, destinationWorld)) {
-            if (!portalBlocksMissing(destCorner, width, height, sourceFrame.orientation)) skipBuild = true;
+            if (!portalBlocksMissing(destCorner, width, height, sourceFrame.orientation)) {
+                skipBuild = true;
+                plugin.debugLog("Both markers are present and portal blocks are not missing, skipping build.");
+            }
         }
         // === REPLACE (END) — Lines 2351–2365
 
         // === REPLACE — Line 2367
-        if (!skipBuild) copyPortalFrameFromTo(sourceFrame.bottomLeft, destCorner, width, height, sourceFrame.orientation);
+        if (!skipBuild) {
+            plugin.debugLog("Copying portal frame.");
+            copyPortalFrameFromTo(sourceFrame.bottomLeft, destCorner, width, height, sourceFrame.orientation);
+        } else {
+            plugin.debugLog("Skipping portal frame copy.");
+        }
         // === REPLACE (END) — Line 2367
 
         // Find a portal block to start scan from (if interior already lit elsewhere)
         if (destCorner.getBlock().getType() != Material.NETHER_PORTAL) {
             Location nearby = findNearbyPortalBlock(destCorner);
-            if (nearby != null) destCorner = nearby;
+            if (nearby != null) {
+                destCorner = nearby;
+                plugin.debugLog("Found nearby portal block, updating destCorner: " + destCorner);
+            }
         }
 
         // REPLACEMENT — use tight search around intended destination
         Location portalScanBase = findNearbyPortalBlock(destCorner, /*radius*/ 3);
         if (portalScanBase == null) portalScanBase = destCorner.clone();
+        plugin.debugLog("Portal scan base: " + portalScanBase);
 
         portalScanBase.setWorld(destW);
         final Location finalScanStart = portalScanBase;
@@ -2323,6 +2393,7 @@ public class PortalManager {
         new org.bukkit.scheduler.BukkitRunnable() {
             int attempts = 0; // up to ~2 seconds @ 2 ticks per attempt
             @Override public void run() {
+                plugin.debugLog("Delayed task running, attempt: " + attempts);
                 attempts++;
 
                 // keep looking for the portal blocks that just formed
@@ -2338,6 +2409,7 @@ public class PortalManager {
                     }
                     return;
                 }
+                plugin.debugLog("New frame scanned successfully.");
 
                 // HARD GUARD — ensure we didn't snap to a distant, older portal
                 double d2 = newFrame.bottomLeft.distanceSquared(destCornerFinal);
@@ -2619,9 +2691,9 @@ public class PortalManager {
         visited.add(center);
         plugin.debugLog("🌀 [SCAN] Scanning from portal block: " + formatLoc(center));
 
-        Direction.Axis axis = detectPortalAxis(center);
-        int dx = axis == Direction.Axis.X ? 1 : 0;
-        int dz = axis == Direction.Axis.Z ? 1 : 0;
+        Axis axis = detectPortalAxis(center);
+        int dx = axis == Axis.X ? 1 : 0;
+        int dz = axis == Axis.Z ? 1 : 0;
 
         /*while (world.getBlockAt(center.clone().add(0, -1, 0)).getType() == Material.NETHER_PORTAL) {
             center.add(0, -1, 0);
@@ -2742,10 +2814,10 @@ public class PortalManager {
         return current.subtract(dx, dy, dz);
     }
 
-    public void showPortalScanVisualization(Player player, Location bottomLeft, int width, int height, Direction.Axis axis) {
+    public void showPortalScanVisualization(Player player, Location bottomLeft, int width, int height, Axis axis) {
         World world = bottomLeft.getWorld();
-        int dx = axis == Direction.Axis.X ? 1 : 0;
-        int dz = axis == Direction.Axis.Z ? 1 : 0;
+        int dx = axis == Axis.X ? 1 : 0;
+        int dz = axis == Axis.Z ? 1 : 0;
 
         // Show perimeter
         for (int i = 0; i <= width + 1; i++) {
@@ -2766,7 +2838,7 @@ public class PortalManager {
         for (int w = 1; w <= width; w++) {
             for (int h = 1; h <= height; h++) {
                 Location inside = bottomLeft.clone().add(dx * w, h, dz * w).add(0.5, 0.5, 0.5);
-                world.spawnParticle(Particle.SPELL_WITCH, inside, 1, 0, 0, 0, 0);
+                world.spawnParticle(Particle.FLAME, inside, 1, 0, 0, 0, 0);
             }
         }
 
@@ -3025,28 +3097,6 @@ public class PortalManager {
         }
 
         return found == 0; // ❌ No portal blocks detected
-    }
- // INSERT (new helper) — PortalManager.java, inside class
-    private @org.jetbrains.annotations.Nullable org.bukkit.Location findNearbyPortalBlock(org.bukkit.Location center, int maxDistanceBlocks) {
-        if (center == null || center.getWorld() == null) return null;
-        org.bukkit.World w = center.getWorld();
-        final int r = Math.max(1, maxDistanceBlocks);
-
-        // Tight cube around the expected frame; shallow Y band is plenty for portals
-        for (int dy = -1; dy <= 3; dy++) {
-            for (int dx = -r; dx <= r; dx++) {
-                for (int dz = -r; dz <= r; dz++) {
-                    org.bukkit.block.Block b = w.getBlockAt(
-                            center.getBlockX() + dx,
-                            center.getBlockY() + dy,
-                            center.getBlockZ() + dz);
-                    if (b.getType() == org.bukkit.Material.NETHER_PORTAL) {
-                        return b.getLocation();
-                    }
-                }
-            }
-        }
-        return null;
     }
     
     public String getMarkerStatus(String linkCode, String worldName) {
@@ -3611,7 +3661,7 @@ public class PortalManager {
             Location loc = entry.getKey();
 
             Location centered = loc.clone().add(0.5, 0.5, 0.5);
-            drawOutlineCube(player, centered, 1.0, Particle.REDSTONE);
+            drawOutlineCube(player, centered, 1.0, Particle.FLAME);
 
 
             // Optional debug message
@@ -3652,7 +3702,7 @@ public class PortalManager {
     }
     private void spawnColoredParticle(Player player, Location loc) {
         Particle.DustOptions dust = new Particle.DustOptions(Color.FUCHSIA, 1.5F);
-        player.spawnParticle(Particle.REDSTONE, loc, 1, 0, 0, 0, 0, dust);
+        player.spawnParticle(Particle.FLAME, loc, 1, 0, 0, 0, 0, dust);
     }
     
     public List<DetectionRegion> getDetectionRegions() {
@@ -4458,7 +4508,7 @@ public class PortalManager {
 	    return null;
 	}
 	
-	    public @org.jetbrains.annotations.Nullable org.bukkit.Location findNearbyPortalBlock(
+    public Location findNearbyPortalBlock(
 	            org.bukkit.Location center, int maxDistanceBlocks) {
 	        return findNearbyPortalBlockTight(center, maxDistanceBlocks);
 	    }

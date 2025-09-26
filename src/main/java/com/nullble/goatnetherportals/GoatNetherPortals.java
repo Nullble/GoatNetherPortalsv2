@@ -49,6 +49,8 @@ public class GoatNetherPortals extends JavaPlugin {
 
         // ✅ Save default config if not present
         saveDefaultConfig();
+        reloadConfig();
+        this.debugMode = getConfig().getBoolean("debug", false);
 
         // ✅ Initialize global portal map file
         globalPortalMapFile = new File(getDataFolder(), "portalMap.yml");

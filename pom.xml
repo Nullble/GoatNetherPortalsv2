@@ -34,13 +34,18 @@
       <id>glaremasters-bloodshot</id>
       <url>https://repo.glaremasters.me/repository/bloodshot/</url>
       <releases><enabled>true</enabled></releases>
-      <snapshots><enabled>true</snapshots>
+      <snapshots><enabled>true</enabled></snapshots>
     </repository>
 
     <!-- JitPack (for NulZone from GitHub) -->
     <repository>
       <id>jitpack</id>
       <url>https://jitpack.io</url>
+    </repository>
+    <!-- Kyori event-api -->
+    <repository>
+        <id>phoenix-repo</id>
+        <url>https://repo.phoenix616.dev/</url>
     </repository>
   </repositories>
 
@@ -54,18 +59,19 @@
     </dependency>
 
     <!-- NulZone from GitHub via JitPack (branch main) -->
-    <dependency>
+    <!--<dependency>
       <groupId>com.github.Nullble</groupId>
       <artifactId>NulZone</artifactId>
-      <version>Tag</version>
-    </dependency>
-
-    <!-- GriefDefender hooks adapter -->
-    <dependency>
-      <groupId>com.griefdefender</groupId>
-      <artifactId>hooks-adapter</artifactId>
-      <version>1.21.1-SNAPSHOT</version>
+      <version>main-SNAPSHOT</version>
       <scope>provided</scope>
+    </dependency>-->
+
+    <!-- GriefDefender API -->
+    <dependency>
+        <groupId>com.griefdefender</groupId>
+        <artifactId>api</artifactId>
+        <version>2.1.0-SNAPSHOT</version>
+        <scope>provided</scope>
     </dependency>
 
     <!-- CustomBlockData (from Maven Central) - shaded below -->
@@ -73,6 +79,14 @@
       <groupId>com.jeff-media</groupId>
       <artifactId>custom-block-data</artifactId>
       <version>2.2.5</version>
+    </dependency>
+
+    <!-- Flow Math -->
+    <dependency>
+        <groupId>com.flowpowered</groupId>
+        <artifactId>flow-math</artifactId>
+        <version>1.0.3</version>
+        <scope>provided</scope>
     </dependency>
 
     <!-- WorldEdit API (provided by server) -->

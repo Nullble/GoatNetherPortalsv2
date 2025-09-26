@@ -4,8 +4,8 @@ import com.nullble.goatnetherportals.PortalManager.PortalFrame;
 import com.nullble.goatnetherportals.PortalManager;
 import org.bukkit.configuration.file.YamlConfiguration;
 import com.nullble.goatnetherportals.GoatNetherPortals;
-import com.nullble.nulzone.NulZone;
-import com.nullble.nulzone.TeleportZoneManager;
+//import com.nullble.nulzone.NulZone;
+//import com.nullble.nulzone.TeleportZoneManager;
 import org.bukkit.block.data.Directional;
 import org.bukkit.Bukkit;
 import org.bukkit.ChatColor;
@@ -97,14 +97,17 @@ public class PortalListener implements Listener {
     
     @EventHandler
     public void onPortalCreate(PortalCreateEvent event) {
+        plugin.debugLog("onPortalCreate triggered. Reason: " + event.getReason());
         if (event.getReason() != PortalCreateEvent.CreateReason.NETHER_PAIR) return;
 
         Entity trigger = event.getEntity();
         if (!(trigger instanceof Player player)) return;
+        plugin.debugLog("Portal created by player: " + player.getName());
 
         UUID uuid = player.getUniqueId();
         Location loc = event.getBlocks().get(0).getLocation();
         String worldName = loc.getWorld().getName();
+        plugin.debugLog("Portal location: " + loc);
 
         event.setCancelled(true);
         plugin.debugLog("❌ Cancelled vanilla-generated portal at: " + event.getBlocks());
@@ -123,6 +126,7 @@ public class PortalListener implements Listener {
             plugin.debugLog("⚠ No pending portal found for " + player.getName() + ". Skipping portal link.");
             return;
         }
+        plugin.debugLog("Found pending link code: " + linkCode);
 
         ConfigurationSection linkSection = config.getConfigurationSection("links." + linkCode);
         if (linkSection == null) {
@@ -131,8 +135,10 @@ public class PortalListener implements Listener {
         }
         
         String opposite = plugin.getOppositeWorld(worldName);
+        plugin.debugLog("Opposite world: " + opposite);
      // 🔄 Re-check for missing portal blocks and retry FAWE paste
         if (linkSection.contains(worldName) && linkSection.contains(opposite)) {
+            plugin.debugLog("Link section contains both worlds.");
             ConfigurationSection frame = linkSection.getConfigurationSection(worldName + ".frame");
             if (frame != null) {
                 String orientation = frame.getString("orientation", "Z");
@@ -144,6 +150,7 @@ public class PortalListener implements Listener {
                     frame.getDouble("corner.y"),
                     frame.getDouble("corner.z")
                 );
+                plugin.debugLog("Frame data found: " + orientation + ", " + width + "x" + height + " at " + corner);
             }
         }
 
@@ -240,32 +247,43 @@ public class PortalListener implements Listener {
 
     @EventHandler(priority = EventPriority.HIGHEST)
     public void onPlayerInteract(PlayerInteractEvent event) {
+        plugin.debugLog("onPlayerInteract triggered.");
         if (event.getAction() != Action.RIGHT_CLICK_BLOCK) return;
+        plugin.debugLog("Action is RIGHT_CLICK_BLOCK.");
 
         Player player = event.getPlayer();
         UUID uuid = player.getUniqueId();
         Block block = event.getClickedBlock();
 
         if (block == null || block.getType() != Material.OBSIDIAN) return;
+        plugin.debugLog("Block is obsidian.");
         if (event.getItem() == null || event.getItem().getType() != Material.FLINT_AND_STEEL) return;
+        plugin.debugLog("Item is flint and steel.");
 
         // Debounce: prevent dual-hand event triggering
         if (!flintCooldown.add(uuid)) {
             event.setCancelled(true);
+            plugin.debugLog("Flint cooldown active, returning.");
             return;
         }
         Bukkit.getScheduler().runTaskLater(plugin, () -> flintCooldown.remove(uuid), 2L);
 
         event.setCancelled(true);
         Location obsidianLoc = block.getLocation();
+        plugin.debugLog("Event cancelled, obsidian location: " + obsidianLoc);
 
         // Fire, then wait 1 tick for the game to form the portal
         Bukkit.getScheduler().runTaskLater(plugin, () -> {
+            plugin.debugLog("Scheduled task 1: Triggering natural portal.");
             plugin.getPortalManager().tryTriggerNaturalPortal(obsidianLoc);
 
             Bukkit.getScheduler().runTaskLater(plugin, () -> {
+                plugin.debugLog("Scheduled task 2: Finding nearby portal block.");
                 Location portalBlock = plugin.getPortalManager().findNearbyPortalBlock(obsidianLoc, 4);
-                if (portalBlock == null) return;
+                if (portalBlock == null) {
+                    plugin.debugLog("No portal block found nearby.");
+                    return;
+                }
 
                 plugin.debugLog("🌀 [SCAN:INTERACT] Scanning portal frame after player lights it at: " + portalBlock);
 
@@ -273,6 +291,7 @@ public class PortalListener implements Listener {
                 PortalFrame frame = plugin.getPortalManager().scanFullPortalFrame(portalBlock, visited, true, false);
                 if (frame == null) {
                     player.sendMessage("§cFailed to scan portal frame.");
+                    plugin.debugLog("Failed to scan portal frame.");
                     return;
                 }
                 plugin.debugLog("✅ Valid portal formed at: " + portalBlock);
@@ -281,6 +300,7 @@ public class PortalListener implements Listener {
                 Location bottomLeft = frame.bottomLeft;
                 Location topRight   = frame.topRight;
                 String frameKey     = keyForFrame(bottomLeft, topRight);
+                plugin.debugLog("Frame key: " + frameKey);
 
                 BukkitTask guard = Bukkit.getScheduler().runTask(plugin, () -> {});
                 BukkitTask existing = frameScanTasks.putIfAbsent(frameKey, guard);
@@ -290,6 +310,7 @@ public class PortalListener implements Listener {
                     return;
                 }
                 try {
+                    plugin.debugLog("Attempting to auto-register portal.");
                     // Register A-side; PortalManager handles detection + paired build
                     plugin.getPortalManager().tryAutoRegisterPortal(player, portalBlock, frame);
                 } finally {

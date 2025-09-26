@@ -1,9 +1,9 @@
-I:\Eclipse Projects\GoatNetherPortals\src\main\java\com\nullble\goatnetherportals\GNPCommand.java
-I:\Eclipse Projects\GoatNetherPortals\src\main\java\com\nullble\goatnetherportals\PendingDeleteManager.java
-I:\Eclipse Projects\GoatNetherPortals\src\main\java\com\nullble\goatnetherportals\DetectionRegion.java
-I:\Eclipse Projects\GoatNetherPortals\src\main\java\com\nullble\goatnetherportals\PortalListener.java
-I:\Eclipse Projects\GoatNetherPortals\src\main\java\com\nullble\goatnetherportals\GNPCommandTabCompleter.java
-I:\Eclipse Projects\GoatNetherPortals\src\main\java\com\nullble\goatnetherportals\InspectListener.java
-I:\Eclipse Projects\GoatNetherPortals\src\main\java\com\nullble\goatnetherportals\PortalManager.java
-I:\Eclipse Projects\GoatNetherPortals\src\main\java\com\nullble\goatnetherportals\PortalEntryListener.java
-I:\Eclipse Projects\GoatNetherPortals\src\main\java\com\nullble\goatnetherportals\GoatNetherPortals.java
+/app/src/main/java/com/nullble/goatnetherportals/GoatNetherPortals.java
+/app/src/main/java/com/nullble/goatnetherportals/GNPCommand.java
+/app/src/main/java/com/nullble/goatnetherportals/PortalListener.java
+/app/src/main/java/com/nullble/goatnetherportals/DetectionRegion.java
+/app/src/main/java/com/nullble/goatnetherportals/PortalEntryListener.java
+/app/src/main/java/com/nullble/goatnetherportals/PortalManager.java
+/app/src/main/java/com/nullble/goatnetherportals/PendingDeleteManager.java
+/app/src/main/java/com/nullble/goatnetherportals/InspectListener.java
+/app/src/main/java/com/nullble/goatnetherportals/GNPCommandTabCompleter.java

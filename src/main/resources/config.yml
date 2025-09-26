@@ -1,5 +1,13 @@
 # GoatNetherPortals Configuration
 
+# ----------------------------------------------
+#               General Settings
+# ----------------------------------------------
+
+# Enable debug mode for verbose logging.
+# When true, additional information will be printed to the console to help with troubleshooting.
+debug: false
+
 # ─────────────────────────────────────────────
 # Worlds listed here will prevent players from
 # creating NEW return links to them.
