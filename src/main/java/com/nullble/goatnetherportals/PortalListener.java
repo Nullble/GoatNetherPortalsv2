@@ -247,78 +247,45 @@ public class PortalListener implements Listener {
 
     @EventHandler(priority = EventPriority.HIGHEST)
     public void onPlayerInteract(PlayerInteractEvent event) {
-        plugin.debugLog("onPlayerInteract triggered.");
-        if (event.getAction() != Action.RIGHT_CLICK_BLOCK) return;
-        plugin.debugLog("Action is RIGHT_CLICK_BLOCK.");
-
-        Player player = event.getPlayer();
-        UUID uuid = player.getUniqueId();
-        Block block = event.getClickedBlock();
-
-        if (block == null || block.getType() != Material.OBSIDIAN) return;
-        plugin.debugLog("Block is obsidian.");
-        if (event.getItem() == null || event.getItem().getType() != Material.FLINT_AND_STEEL) return;
-        plugin.debugLog("Item is flint and steel.");
-
-        // Debounce: prevent dual-hand event triggering
-        if (!flintCooldown.add(uuid)) {
-            event.setCancelled(true);
-            plugin.debugLog("Flint cooldown active, returning.");
+        if (event.getAction() != Action.RIGHT_CLICK_BLOCK || event.getHand() != EquipmentSlot.HAND) {
             return;
         }
-        Bukkit.getScheduler().runTaskLater(plugin, () -> flintCooldown.remove(uuid), 2L);
 
+        Block clickedBlock = event.getClickedBlock();
+        if (clickedBlock == null || clickedBlock.getType() != Material.OBSIDIAN) {
+            return;
+        }
+
+        ItemStack item = event.getItem();
+        if (item == null || item.getType() != Material.FLINT_AND_STEEL) {
+            return;
+        }
+
+        Player player = event.getPlayer();
         event.setCancelled(true);
-        Location obsidianLoc = block.getLocation();
-        plugin.debugLog("Event cancelled, obsidian location: " + obsidianLoc);
 
-        // Fire, then wait 1 tick for the game to form the portal
+        Location obsidianLoc = clickedBlock.getLocation();
+
+        // Trigger vanilla portal creation
+        plugin.getPortalManager().tryTriggerNaturalPortal(obsidianLoc);
+
+        // Schedule a task to check for the portal frame after ignition
         Bukkit.getScheduler().runTaskLater(plugin, () -> {
-            plugin.debugLog("Scheduled task 1: Triggering natural portal.");
-            plugin.getPortalManager().tryTriggerNaturalPortal(obsidianLoc);
+            Location portalBlock = portalManager.findNearbyPortalBlock(obsidianLoc, 4);
+            if (portalBlock == null) {
+                player.sendMessage("§cPortal did not form correctly. Try again.");
+                return;
+            }
 
-            Bukkit.getScheduler().runTaskLater(plugin, () -> {
-                plugin.debugLog("Scheduled task 2: Finding nearby portal block.");
-                Location portalBlock = plugin.getPortalManager().findNearbyPortalBlock(obsidianLoc, 4);
-                if (portalBlock == null) {
-                    plugin.debugLog("No portal block found nearby.");
-                    return;
-                }
+            PortalFrame frame = portalManager.scanFullPortalFrame(portalBlock);
+            if (frame == null) {
+                player.sendMessage("§cCould not validate the portal structure.");
+                return;
+            }
 
-                plugin.debugLog("🌀 [SCAN:INTERACT] Scanning portal frame after player lights it at: " + portalBlock);
+            portalManager.createAndLinkPortals(player, portalBlock, frame);
 
-                Set<Location> visited = new HashSet<>();
-                PortalFrame frame = plugin.getPortalManager().scanFullPortalFrame(portalBlock, visited, true, false);
-                if (frame == null) {
-                    player.sendMessage("§cFailed to scan portal frame.");
-                    plugin.debugLog("Failed to scan portal frame.");
-                    return;
-                }
-                plugin.debugLog("✅ Valid portal formed at: " + portalBlock);
-
-                // Single-scan guard per frame (prevents double Portal-B)
-                Location bottomLeft = frame.bottomLeft;
-                Location topRight   = frame.topRight;
-                String frameKey     = keyForFrame(bottomLeft, topRight);
-                plugin.debugLog("Frame key: " + frameKey);
-
-                BukkitTask guard = Bukkit.getScheduler().runTask(plugin, () -> {});
-                BukkitTask existing = frameScanTasks.putIfAbsent(frameKey, guard);
-                if (existing != null) {
-                    guard.cancel();
-                    plugin.debugLog("⏭️ [DEBOUNCE] Frame already being processed: " + frameKey);
-                    return;
-                }
-                try {
-                    plugin.debugLog("Attempting to auto-register portal.");
-                    // Register A-side; PortalManager handles detection + paired build
-                    plugin.getPortalManager().tryAutoRegisterPortal(player, portalBlock, frame);
-                } finally {
-                    frameScanTasks.remove(frameKey, guard);
-                    guard.cancel();
-                }
-            }, 1L);
-        }, 2L);
+        }, 2L); // 2-tick delay to allow the portal to form
     }
 
     @EventHandler(priority = EventPriority.MONITOR)
@@ -328,20 +295,13 @@ public class PortalListener implements Listener {
         Block dispenser = event.getBlock();
         BlockFace facing = ((Directional) dispenser.getBlockData()).getFacing();
         Block targetBlock = dispenser.getRelative(facing);
-        Location igniteLoc = targetBlock.getLocation();
-
-        plugin.debugLog("🚀 BlockDispenseEvent fired!");
-        plugin.debugLog("🧱 Target block from dispenser: " + targetBlock.getType());
 
         // Only allow fire placement into air, above obsidian
         if (targetBlock.getType() != Material.AIR) {
-            plugin.debugLog("⚠ Target is not AIR — cannot place fire.");
             return;
         }
-
-        Block under = igniteLoc.clone().subtract(0, 1, 0).getBlock();
+        Block under = targetBlock.clone().subtract(0, 1, 0).getBlock();
         if (under.getType() != Material.OBSIDIAN) {
-            plugin.debugLog("⚠ Block under ignition is not obsidian — ignition denied.");
             return;
         }
 
@@ -349,6 +309,7 @@ public class PortalListener implements Listener {
         event.setCancelled(true);
 
         // Manually place fire
+        Location igniteLoc = targetBlock.getLocation();
         igniteLoc.getBlock().setType(Material.FIRE);
 
         // Trigger portal formation (vanilla behavior)
@@ -356,39 +317,19 @@ public class PortalListener implements Listener {
 
         // Delay to allow the portal to fully form
         Bukkit.getScheduler().runTaskLater(plugin, () -> {
-            Location portalBlock = plugin.getPortalManager().findNearbyPortalBlock(igniteLoc, 4);
+            Location portalBlock = portalManager.findNearbyPortalBlock(igniteLoc, 4);
             if (portalBlock == null) {
-                plugin.debugLog("❌ No portal block found after ignition.");
+                plugin.debugLog("❌ [DISPENSER] No portal block found after ignition.");
                 return;
             }
 
-            plugin.debugLog("🌀 [DISPENSE] Scanning portal frame after dispenser ignition at: " + portalBlock);
-
-            PortalFrame frame = plugin.getPortalManager().scanFullPortalFrame(portalBlock);
+            PortalFrame frame = portalManager.scanFullPortalFrame(portalBlock);
             if (frame == null) {
-                plugin.debugLog("❌ Failed to scan portal frame.");
+                plugin.debugLog("❌ [DISPENSER] Failed to scan portal frame.");
                 return;
             }
 
-            plugin.debugLog("✅ Valid portal formed at: " + portalBlock);
-
-            UUID fakeUUID = PortalManager.SERVER_UUID;
-            String worldName = portalBlock.getWorld().getName();
-
-            // 🔍 Attempt to resolve existing linkCode from markers or frame data
-            String linkCode = plugin.getPortalManager().resolveLinkCodeByMarkerScan(frame);
-            if (linkCode != null) {
-                plugin.debugLog("🔗 [DISPENSER] Found existing linkCode via marker scan: " + linkCode);
-            } else {
-                linkCode = plugin.getPortalManager().generateUniqueLinkCode(fakeUUID);
-                plugin.debugLog("🆕 [DISPENSER] Generated new linkCode: " + linkCode);
-            }
-
-            // 💾 Register the portal and save to config
-            plugin.getPortalManager().registerDispenserPortal(fakeUUID, linkCode, frame, worldName);
-
-            // 🔁 Attempt to generate or finalize the opposite portal
-            plugin.getPortalManager().forceGeneratePairedPortal(linkCode, worldName, fakeUUID, frame);
+            portalManager.createAndLinkPortalsForDispenser(portalBlock, frame);
 
         }, 2L); // short delay for portal to fully form
     }
@@ -417,18 +358,25 @@ public class PortalListener implements Listener {
         Block block = event.getBlock();
         Material type = block.getType();
 
-        // ✅ Filter only for Obsidian and Nether Portal blocks
-        if (type != Material.OBSIDIAN && type != Material.NETHER_PORTAL) return;
+        // Filter for portal frame materials
+        if (type != Material.OBSIDIAN && type != Material.DIAMOND_BLOCK && type != Material.NETHER_PORTAL) return;
 
-        // 🔍 Look for nearby ArmorStands that act as markers
-        Collection<Entity> nearbyEntities = block.getWorld().getNearbyEntities(block.getLocation(), 3, 3, 3);
-        for (Entity entity : nearbyEntities) {
-            if (entity instanceof ArmorStand stand) {
-                PersistentDataContainer data = stand.getPersistentDataContainer();
-                NamespacedKey key = new NamespacedKey(plugin, "linkCode");
-                if (data.has(key, PersistentDataType.STRING)) {
-                    plugin.debugLog("⚠️ Portal marker found near broken portal — removing...");
-                    stand.remove();
+        Location blockLoc = block.getLocation();
+        java.util.List<DetectionRegion> regions = portalManager.getDetectionRegions();
+
+        for (DetectionRegion region : regions) {
+            if (region.contains(blockLoc)) {
+                String linkCode = region.getLinkCode();
+                Portal portal = portalManager.getPortal(linkCode, block.getWorld().getName());
+
+                if (portal != null && portal.getFrame() != null) {
+                    // Check if the broken block is part of the frame or the portal itself
+                    if (type == Material.NETHER_PORTAL || portalManager.isBlockInFrame(blockLoc, portal.getFrame())) {
+                        Player player = event.getPlayer();
+                        player.sendMessage("§eYou have broken a linked portal. The pair has also been removed.");
+                        portalManager.deletePortal(linkCode, player);
+                        break;
+                    }
                 }
             }
         }
@@ -495,78 +443,53 @@ public class PortalListener implements Listener {
     }
 
     @EventHandler(priority = EventPriority.HIGHEST)
-    public void onPortalUse(org.bukkit.event.player.PlayerPortalEvent event) {
-        final Player player = event.getPlayer();
-        final Location from = event.getFrom();
+    public void onPortalUse(PlayerPortalEvent event) {
+        Player player = event.getPlayer();
+        UUID playerUUID = player.getUniqueId();
 
-        // Find the actual portal block near the event origin (fallback to 'from' if none)
-        Location fromBlock = plugin.getPortalManager().findNearbyPortalBlock(from, 4);
-        if (fromBlock == null) {
-            fromBlock = from;
-        }
-
-        // Use the existing helper you already have in this file
-        resolveLinkOrRetryOnce(player, event, this.portalManager, fromBlock);
-    }
-
-    private void resolveLinkOrRetryOnce(Player player,
-                                        org.bukkit.event.player.PlayerPortalEvent event,
-                                        com.nullble.goatnetherportals.PortalManager portalManager,
-                                        org.bukkit.Location fromBlock) {
-        // 1) Region index first
-        String link = portalManager.findLinkCodeAt(fromBlock);
-        if (link == null) {
-            // 2) Marker scan fallback
-            java.util.Set<org.bukkit.Location> v = new java.util.HashSet<>();
-            com.nullble.goatnetherportals.PortalManager.PortalFrame pf =
-                    portalManager.scanFullPortalFrame(fromBlock, v, true, false);
-            if (pf != null) link = portalManager.resolveLinkCodeByMarkerScan(pf);
-        }
-
-        if (link == null) {
-            // 3) Give the registry 2 ticks to catch up, then try exactly once more
-            org.bukkit.Bukkit.getScheduler().runTaskLater(
-                    com.nullble.goatnetherportals.GoatNetherPortals.getInstance(),
-                    () -> {
-                        String again = portalManager.findLinkCodeAt(fromBlock);
-                        if (again == null) {
-                            java.util.Set<org.bukkit.Location> v2 = new java.util.HashSet<>();
-                            var pf2 = portalManager.scanFullPortalFrame(fromBlock, v2, true, false);
-                            if (pf2 != null) again = portalManager.resolveLinkCodeByMarkerScan(pf2);
-                        }
-                        if (again == null) {
-                            event.setCancelled(true);
-                            player.sendMessage("§cPortal isn’t ready yet. Step out and re-enter.");
-                        } else {
-                            portalManager.setLastDetectedLink(player.getUniqueId(), again);
-                            player.performCommand("gnp validate"); // optional: poke any validation you use
-                        }
-                    },
-                    2L
-            );
+        // Consume the link code from the entry listener
+        String linkCode = portalManager.consumeRecentPortalEntry(playerUUID);
+        if (linkCode == null) {
+            // This is not a custom portal, so we allow vanilla behavior
             return;
         }
 
-        portalManager.setLastDetectedLink(player.getUniqueId(), link);
+        // It's a custom portal, so we always cancel the vanilla event
+        event.setCancelled(true);
 
-        // Find the destination
-        UUID ownerUUID = portalManager.getPortalOwner(link);
-        if (ownerUUID != null && !ownerUUID.equals(player.getUniqueId())) {
-            Location linkBlockLocation = portalManager.getLinkBlockLocation(ownerUUID, player.getWorld().getName());
-            if (linkBlockLocation != null) {
-                event.setTo(linkBlockLocation);
-                return;
-            }
+        // We need the portal the player is standing in to know its owner
+        Portal currentPortal = portalManager.getPortal(linkCode, player.getWorld().getName());
+        if (currentPortal == null) {
+            player.sendMessage("§cThis portal seems to be broken (cannot find its data).");
+            return;
         }
 
-        Location destination = portalManager.getDestinationFromLink(link, player.getWorld());
+        UUID ownerUUID = currentPortal.getOwner();
+        Location destination = null;
+
+        World currentWorld = player.getWorld();
+        String destinationWorldName = plugin.getOppositeWorld(currentWorld.getName());
+        if (destinationWorldName == null) {
+            player.sendMessage("§cThis world does not have a linked opposite world.");
+            return;
+        }
+
+        // Handle link-block override for non-owners, checking in the destination world.
+        if (!playerUUID.equals(ownerUUID)) {
+            destination = portalManager.getLinkBlockLocation(ownerUUID, destinationWorldName);
+        }
+
+        // If no link-block, or if the player is the owner, find the paired portal
         if (destination == null) {
-            player.sendMessage("§cThis portal does not have a linked destination.");
-            event.setCancelled(true);
-            return;
+            destination = portalManager.getLinkedPortalLocation(linkCode, currentWorld);
+        }
+
+        if(destination == null) {
+             player.sendMessage("§cCould not find a destination for this portal. The linked portal may not exist.");
+             return;
         }
 
         // Teleport the player
-        event.setTo(destination);
+        player.teleport(destination);
     }
 }

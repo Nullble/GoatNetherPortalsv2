@@ -38,37 +38,80 @@ public class GNPCommand implements CommandExecutor {
         }
 
         switch (args[0].toLowerCase()) {
-            case "portdelete":
-                if (args.length == 1) {
-                    player.sendMessage("§7[Stub] initiatePortalDeletion would run here.");
+            case "delete":
+                if (!player.hasPermission("goatportals.admin")) {
+                    player.sendMessage("§cYou do not have permission to use this command.");
                     return true;
                 }
-                if (args.length == 2 && args[1].equalsIgnoreCase("all")) {
-                    pending.queue(player.getUniqueId(), player.getName());
-                    sendConfirmPrompt(player, player.getName());
+                if (args.length != 2) {
+                    player.sendMessage("§cUsage: /gnp delete <linkCode>");
                     return true;
                 }
-                if (args.length == 3 && args[1].equalsIgnoreCase("all")) {
-                    if (!player.hasPermission("goatportals.admin")) {
-                        player.sendMessage("§cYou do not have permission to delete other players' portals.");
-                        return true;
+                manager.deletePortal(args[1], player);
+                return true;
+            case "setowner":
+                if (!player.hasPermission("goatportals.admin")) {
+                    player.sendMessage("§cYou do not have permission to use this command.");
+                    return true;
+                }
+                if (args.length != 3) {
+                    player.sendMessage("§cUsage: /gnp setowner <linkCode> <player>");
+                    return true;
+                }
+                String linkCode = args[1];
+                String newOwnerName = args[2];
+                UUID newOwnerUUID = manager.getUUIDFromName(newOwnerName);
+                if (newOwnerUUID == null) {
+                    player.sendMessage("§cPlayer not found: " + newOwnerName);
+                    return true;
+                }
+                manager.setOwner(linkCode, newOwnerUUID, player);
+                return true;
+            case "find":
+                if (!player.hasPermission("goatportals.admin")) {
+                    player.sendMessage("§cYou do not have permission to use this command.");
+                    return true;
+                }
+                if (args.length != 2) {
+                    player.sendMessage("§cUsage: /gnp find <player|linkCode>");
+                    return true;
+                }
+                String query = args[1];
+
+                // First, try to find portals by link code
+                java.util.List<Portal> portalsByLinkCode = manager.findPortalsByLinkCode(query);
+                if (!portalsByLinkCode.isEmpty()) {
+                    player.sendMessage("§6Portals found for link code: §f" + query);
+                    for (Portal p : portalsByLinkCode) {
+                        OfflinePlayer owner = Bukkit.getOfflinePlayer(p.getOwner());
+                        player.sendMessage("§e- Owner: §f" + (owner.getName() != null ? owner.getName() : "Unknown"));
+                        Location loc = p.getLocation();
+                        player.sendMessage("  §e- Location: §f" + loc.getWorld().getName() + " at " + loc.getBlockX() + ", " + loc.getBlockY() + ", " + loc.getBlockZ());
                     }
-                    pending.queue(player.getUniqueId(), args[2]);
-                    sendConfirmPrompt(player, args[2]);
                     return true;
                 }
-                player.sendMessage("§cUsage: /gnp portdelete [all] [player]");
-                return true;
 
-            case "confirmdelete":
-                if (!pending.isPending(player.getUniqueId())) {
-                    player.sendMessage("§7You have no pending deletions.");
-                    return true;
+                // If not found by link code, try to find by player name
+                UUID targetUUID = manager.getUUIDFromName(query);
+                java.util.List<Portal> portalsByOwner = manager.findPortalsByOwner(targetUUID);
+                if (!portalsByOwner.isEmpty()) {
+                    player.sendMessage("§6Portals for player " + query + ":");
+                    java.util.Map<String, java.util.List<Portal>> groupedPortals = new java.util.HashMap<>();
+                    for (Portal p : portalsByOwner) {
+                        groupedPortals.computeIfAbsent(p.getLinkCode(), k -> new java.util.ArrayList<>()).add(p);
+                    }
+
+                    for (java.util.Map.Entry<String, java.util.List<Portal>> entry : groupedPortals.entrySet()) {
+                        player.sendMessage("§e- Link Code: §f" + entry.getKey());
+                        for (Portal p : entry.getValue()) {
+                            Location loc = p.getLocation();
+                            player.sendMessage("  §e- Location: §f" + loc.getWorld().getName() + " at " + loc.getBlockX() + ", " + loc.getBlockY() + ", " + loc.getBlockZ());
+                        }
+                    }
+                } else {
+                    player.sendMessage("§cNo portal or player found for query: " + query);
                 }
-                String target = pending.confirm(player.getUniqueId());
-                player.sendMessage("§7[Stub] deleteAllPortalsFor would be called for: " + target);
                 return true;
-
             case "cleanup":
                 if (!player.hasPermission("goatportals.admin")) {
                     player.sendMessage("§cYou do not have permission to run this.");
@@ -112,12 +155,32 @@ public class GNPCommand implements CommandExecutor {
                 player.sendMessage("§7[Stub] validateAllPortalData would run here.");
                 return true;
 
-            case "link":
-                player.sendMessage("§7[Stub] initiateManualLink would run here.");
+            case "move":
+                if (!player.hasPermission("goatportals.admin")) {
+                    player.sendMessage("§cYou do not have permission to use this command.");
+                    return true;
+                }
+                if (args.length != 2) {
+                    player.sendMessage("§cUsage: /gnp move <linkCode>");
+                    return true;
+                }
+                manager.movePortal(args[1], player.getLocation(), player);
                 return true;
 
             case "unlink":
                 player.sendMessage("§7[Stub] unlinkNearestPortal would run here.");
+                return true;
+
+            case "restore":
+                if (!player.hasPermission("goatportals.admin")) {
+                    player.sendMessage("§cYou do not have permission to use this command.");
+                    return true;
+                }
+                if (args.length != 2) {
+                    player.sendMessage("§cUsage: /gnp restore <linkCode>");
+                    return true;
+                }
+                manager.restorePortal(args[1], player);
                 return true;
 
             /*case "reload":
@@ -274,8 +337,9 @@ public class GNPCommand implements CommandExecutor {
 
     private void sendHelp(Player player) {
         player.sendMessage("§6GoatNetherPortals Commands:");
-        player.sendMessage("§e/gnp portdelete [all] [player] §7- Delete your portal or all of a player");
-        player.sendMessage("§e/gnp confirmdelete §7- Confirm pending portal deletion");
+        player.sendMessage("§e/gnp setowner <linkCode> <player> §7- Sets the owner of a portal.");
+        player.sendMessage("§e/gnp find <player|linkCode> §7- Finds portals by player or link code.");
+        player.sendMessage("§e/gnp delete <linkCode> §7- Deletes a portal and its linked pair.");
         player.sendMessage("§e/gnp cleanup §7- Clean global portal map (admin)");
         player.sendMessage("§e/gnp cleanupself §7- Clean your own portal data");
         player.sendMessage("§e/gnp cleanupmarkers §7- Remove orphaned portal markers (admin)");
@@ -283,7 +347,8 @@ public class GNPCommand implements CommandExecutor {
         player.sendMessage("§e/gnp inspect §7- Toggle portal inspection mode");
         player.sendMessage("§e/gnp resyncmap §7- Force save all portal links to disk");
         player.sendMessage("§e/gnp validate §7- Validate and repair portal links");
-        player.sendMessage("§e/gnp link §7- Manually start linking");
+        player.sendMessage("§e/gnp move <linkCode> §7- Moves a portal to your current location.");
+        player.sendMessage("§e/gnp restore <linkCode> §7- Restores a deleted portal from a backup.");
         player.sendMessage("§e/gnp unlink §7- Unlink nearest portal");
         player.sendMessage("§e/gnp reload §7- Reload config");
         player.sendMessage("§e/gnp debug §7- Dump debug info");
