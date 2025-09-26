@@ -1,6 +1,6 @@
 package com.nullble.goatnetherportals;
 
-import com.nullble.goatnetherportals.PortalManager.PortalFrame;
+import com.nullble.goatnetherportals.PortalFrame;
 import com.nullble.goatnetherportals.PortalManager;
 import org.bukkit.configuration.file.YamlConfiguration;
 import com.nullble.goatnetherportals.GoatNetherPortals;
@@ -95,155 +95,6 @@ public class PortalListener implements Listener {
         return plugin.getConfig().getStringList("sensitive-blocks").contains(type.name());
     }
     
-    @EventHandler
-    public void onPortalCreate(PortalCreateEvent event) {
-        plugin.debugLog("onPortalCreate triggered. Reason: " + event.getReason());
-        if (event.getReason() != PortalCreateEvent.CreateReason.NETHER_PAIR) return;
-
-        Entity trigger = event.getEntity();
-        if (!(trigger instanceof Player player)) return;
-        plugin.debugLog("Portal created by player: " + player.getName());
-
-        UUID uuid = player.getUniqueId();
-        Location loc = event.getBlocks().get(0).getLocation();
-        String worldName = loc.getWorld().getName();
-        plugin.debugLog("Portal location: " + loc);
-
-        event.setCancelled(true);
-        plugin.debugLog("❌ Cancelled vanilla-generated portal at: " + event.getBlocks());
-
-        // ⏳ Check spam
-        long now = System.currentTimeMillis();
-        long last = portalManager.getLastIgniteTime(uuid);
-        if (now - last < 2000) {
-            plugin.debugLog("⏳ Suppressed duplicate portal trigger for " + player.getName());
-            return;
-        }
-
-        YamlConfiguration config = portalManager.getConfig(uuid);
-        String linkCode = portalManager.findAnyLinkCodeWithOneWorld(uuid);
-        if (linkCode == null) {
-            plugin.debugLog("⚠ No pending portal found for " + player.getName() + ". Skipping portal link.");
-            return;
-        }
-        plugin.debugLog("Found pending link code: " + linkCode);
-
-        ConfigurationSection linkSection = config.getConfigurationSection("links." + linkCode);
-        if (linkSection == null) {
-            plugin.debugLog("⚠ Link section not found for code: " + linkCode);
-            return;
-        }
-        
-        String opposite = plugin.getOppositeWorld(worldName);
-        plugin.debugLog("Opposite world: " + opposite);
-     // 🔄 Re-check for missing portal blocks and retry FAWE paste
-        if (linkSection.contains(worldName) && linkSection.contains(opposite)) {
-            plugin.debugLog("Link section contains both worlds.");
-            ConfigurationSection frame = linkSection.getConfigurationSection(worldName + ".frame");
-            if (frame != null) {
-                String orientation = frame.getString("orientation", "Z");
-                int width = frame.getInt("width", 3);
-                int height = frame.getInt("height", 4);
-
-                Location corner = new Location(loc.getWorld(),
-                    frame.getDouble("corner.x"),
-                    frame.getDouble("corner.y"),
-                    frame.getDouble("corner.z")
-                );
-                plugin.debugLog("Frame data found: " + orientation + ", " + width + "x" + height + " at " + corner);
-            }
-        }
-
-        ConfigurationSection frame = linkSection.getConfigurationSection(worldName + ".frame");
-        if (frame == null || !frame.contains("corner.x")) {
-            plugin.debugLog("⚠ Skipping paired portal generation — missing corner data.");
-            return;
-        }
-
-        // 🧠 Only continue if this portal is being created in the arrival world (world-B)
-        if (!linkSection.contains(worldName) || linkSection.contains(opposite)) {
-            plugin.debugLog("🛑 Skipping paired portal creation — either not in world-B or already handled.");
-            return;
-        }
-
-        plugin.debugLog("🛠 Detected World-B portal creation for linkCode: " + linkCode);
-        plugin.debugLog("📦 Scheduling paired portal copy from " + opposite + " → " + worldName);
-    }
-    @EventHandler(priority = EventPriority.MONITOR)
-    public void onDispenserPortalCreate(PortalCreateEvent event) {
-        if (event.getReason() != PortalCreateEvent.CreateReason.FIRE) return;
-        if (event.getEntity() != null) return; // Skip players; handled in onPortalCreate
-        if (event.getBlocks().isEmpty()) return;
-
-        Location base = event.getBlocks().get(0).getLocation();
-        boolean dispenserNearby = false;
-
-        for (int dx = -1; dx <= 1; dx++) {
-            for (int dy = -1; dy <= 1; dy++) {
-                for (int dz = -1; dz <= 1; dz++) {
-                    Block relative = base.clone().add(dx, dy, dz).getBlock();
-                    if (relative.getType() == Material.DISPENSER) {
-                        dispenserNearby = true;
-                        break;
-                    }
-                }
-            }
-        }
-
-        if (!dispenserNearby) {
-            plugin.debugLog("❌ [DISPENSER-PORTAL] No dispenser found near: " + base + " — skipping.");
-            return;
-        }
-
-        World world = base.getWorld();
-        if (world == null) return;
-
-        plugin.debugLog("🧯 [DISPENSER-PORTAL] Dispenser-triggered portal detected at: " + base);
-
-        Bukkit.getScheduler().runTaskLater(plugin, () -> {
-            //PortalFrame frame = portalManager.scanFullPortalFrame(base);
-        	PortalFrame frame = portalManager.scanFullPortalFrame(base, new HashSet<>(), true, true);
-
-            if (frame == null) {
-                plugin.debugLog("⚠️ [DISPENSER-PORTAL] Frame scan failed at: " + base);
-                return;
-            }
-
-            UUID systemUUID = UUID.fromString("00000000-0000-0000-0000-000000000001");
-
-            // Check if this portal is completing a return link
-            YamlConfiguration config = portalManager.getConfig(systemUUID);
-            String linkCode = portalManager.findAnyLinkCodeWithOneWorld(systemUUID);
-
-            if (linkCode != null) {
-                ConfigurationSection linkSection = config.getConfigurationSection("links." + linkCode);
-                if (linkSection != null) {
-                    String worldName = base.getWorld().getName();
-                    String opposite = plugin.getOppositeWorld(worldName);
-
-                    if (linkSection.contains(opposite) && !linkSection.contains(worldName)) {
-                        // 🌍 Save arrival portal location
-                        ConfigurationSection worldSection = linkSection.createSection(worldName);
-                        ConfigurationSection locSection = worldSection.createSection("location");
-                        locSection.set("x", base.getBlockX());
-                        locSection.set("y", base.getBlockY());
-                        locSection.set("z", base.getBlockZ());
-
-                        portalManager.savePlayerConfig(systemUUID, config);
-                        plugin.debugLog("📌 [DISPENSER-ARRIVAL] Destination location updated for linkCode: " + linkCode);
-
-                        // 💾 Register full portal now
-                        portalManager.registerDispenserPortal(systemUUID, linkCode, frame, worldName);
-                        return;
-                    }
-                }
-            }
-
-            // 🔁 Fallback: no partial link, generate new one
-            linkCode = portalManager.generateUniqueLinkCode(systemUUID);
-            portalManager.registerDispenserPortal(systemUUID, linkCode, frame, world.getName());
-        }, 2L);
-    }
 
     @EventHandler(priority = EventPriority.HIGHEST)
     public void onPlayerInteract(PlayerInteractEvent event) {
@@ -283,7 +134,7 @@ public class PortalListener implements Listener {
                 return;
             }
 
-            portalManager.createAndLinkPortals(player, portalBlock, frame);
+            portalManager.createPortalPair(player.getUniqueId(), portalBlock, frame);
 
         }, 2L); // 2-tick delay to allow the portal to form
     }
@@ -300,7 +151,7 @@ public class PortalListener implements Listener {
         if (targetBlock.getType() != Material.AIR) {
             return;
         }
-        Block under = targetBlock.clone().subtract(0, 1, 0).getBlock();
+        Block under = targetBlock.getLocation().clone().subtract(0, 1, 0).getBlock();
         if (under.getType() != Material.OBSIDIAN) {
             return;
         }
@@ -329,7 +180,7 @@ public class PortalListener implements Listener {
                 return;
             }
 
-            portalManager.createAndLinkPortalsForDispenser(portalBlock, frame);
+            portalManager.createPortalPair(PortalManager.SERVER_UUID, portalBlock, frame);
 
         }, 2L); // short delay for portal to fully form
     }
@@ -372,9 +223,7 @@ public class PortalListener implements Listener {
                 if (portal != null && portal.getFrame() != null) {
                     // Check if the broken block is part of the frame or the portal itself
                     if (type == Material.NETHER_PORTAL || portalManager.isBlockInFrame(blockLoc, portal.getFrame())) {
-                        Player player = event.getPlayer();
-                        player.sendMessage("§eYou have broken a linked portal. The pair has also been removed.");
-                        portalManager.deletePortal(linkCode, player);
+                        portalManager.deletePortal(linkCode, event.getPlayer());
                         break;
                     }
                 }
@@ -382,82 +231,29 @@ public class PortalListener implements Listener {
         }
     }
 
-    private String tryFindSharedCode(YamlConfiguration config, String fromWorld, String toWorld, Location arrivalLoc) {
-        ConfigurationSection links = config.getConfigurationSection("links");
-        if (links == null) return null;
-
-        String bestMatch = null;
-        double bestDistance = Double.MAX_VALUE;
-
-        for (String code : links.getKeys(false)) {
-            ConfigurationSection section = links.getConfigurationSection(code);
-            if (section == null) continue;
-
-            //boolean isPending = section.getBoolean("pendingPair", false);
-
-            ConfigurationSection fromSec = section.getConfigurationSection(fromWorld);
-            ConfigurationSection toSec = section.getConfigurationSection(toWorld);
-
-            boolean hasFrom = fromSec != null && fromSec.contains("location");
-            boolean hasTo = toSec != null && toSec.contains("location");
-
-            if (hasFrom && hasTo) {
-                // Check which completed link is *closest* to the arrival portal
-                ConfigurationSection locSec = toSec.getConfigurationSection("location");
-                if (locSec != null) {
-                    double x = locSec.getDouble("x");
-                    double y = locSec.getDouble("y");
-                    double z = locSec.getDouble("z");
-
-                    if (arrivalLoc != null && arrivalLoc.getWorld().getName().equals(toWorld)) {
-                        double dist = arrivalLoc.distanceSquared(new Location(arrivalLoc.getWorld(), x, y, z));
-                        if (dist < bestDistance) {
-                            bestDistance = dist;
-                            bestMatch = code;
-                        }
-                    }
-                }
-            }
-        }
-
-        return bestMatch;
-    }
-
-    public void registerDetectionFor(String linkCode, java.util.UUID uuid, PortalFrame frame) {
-        // compute interior bounds from the frame we just built/ignited
-        int minX = Math.min(frame.bottomLeft.getBlockX(), frame.bottomRight.getBlockX());
-        int maxX = Math.max(frame.bottomLeft.getBlockX(), frame.bottomRight.getBlockX());
-        int minZ = Math.min(frame.bottomLeft.getBlockZ(), frame.bottomRight.getBlockZ());
-        int maxZ = Math.max(frame.bottomLeft.getBlockZ(), frame.bottomRight.getBlockZ());
-        int minY = frame.bottomLeft.getBlockY();
-        int maxY = frame.topLeft.getBlockY();
-
-        // expand 1 block perpendicular to frame so stepping in is caught reliably
-        int expandX = 0, expandZ = 0;
-        if ("X".equalsIgnoreCase(frame.orientation)) expandZ = 1; else expandX = 1;
-
-        Location min = new Location(frame.bottomLeft.getWorld(), minX, minY, minZ).clone().subtract(expandX, 0, expandZ);
-        Location max = new Location(frame.topRight.getWorld(),  maxX, maxY, maxZ).clone().add(expandX, 0, expandZ);
-
-
-    }
 
     @EventHandler(priority = EventPriority.HIGHEST)
     public void onPortalUse(PlayerPortalEvent event) {
         Player player = event.getPlayer();
         UUID playerUUID = player.getUniqueId();
 
-        // Consume the link code from the entry listener
-        String linkCode = portalManager.consumeRecentPortalEntry(playerUUID);
+        // Find the link code by scanning the area around the player
+        String linkCode = portalManager.findLinkCodeAt(player.getLocation());
         if (linkCode == null) {
-            // This is not a custom portal, so we allow vanilla behavior
-            return;
+            return; // Not a custom portal
         }
 
         // It's a custom portal, so we always cancel the vanilla event
         event.setCancelled(true);
 
-        // We need the portal the player is standing in to know its owner
+        // Cooldown to prevent instant re-teleport
+        if (recentlyTeleported.contains(playerUUID)) {
+            return;
+        }
+        recentlyTeleported.add(playerUUID);
+        Bukkit.getScheduler().runTaskLater(plugin, () -> recentlyTeleported.remove(playerUUID), 40L); // 2 second cooldown
+
+
         Portal currentPortal = portalManager.getPortal(linkCode, player.getWorld().getName());
         if (currentPortal == null) {
             player.sendMessage("§cThis portal seems to be broken (cannot find its data).");
@@ -474,7 +270,7 @@ public class PortalListener implements Listener {
             return;
         }
 
-        // Handle link-block override for non-owners, checking in the destination world.
+        // Handle link-block override for non-owners
         if (!playerUUID.equals(ownerUUID)) {
             destination = portalManager.getLinkBlockLocation(ownerUUID, destinationWorldName);
         }
@@ -489,7 +285,6 @@ public class PortalListener implements Listener {
              return;
         }
 
-        // Teleport the player
         player.teleport(destination);
     }
 }

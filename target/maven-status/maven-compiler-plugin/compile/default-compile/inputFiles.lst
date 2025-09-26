@@ -1,9 +1,11 @@
 /app/src/main/java/com/nullble/goatnetherportals/GoatNetherPortals.java
 /app/src/main/java/com/nullble/goatnetherportals/GNPCommand.java
 /app/src/main/java/com/nullble/goatnetherportals/PortalListener.java
+/app/src/main/java/com/nullble/goatnetherportals/Portal.java
 /app/src/main/java/com/nullble/goatnetherportals/DetectionRegion.java
 /app/src/main/java/com/nullble/goatnetherportals/PortalEntryListener.java
 /app/src/main/java/com/nullble/goatnetherportals/PortalManager.java
 /app/src/main/java/com/nullble/goatnetherportals/PendingDeleteManager.java
 /app/src/main/java/com/nullble/goatnetherportals/InspectListener.java
 /app/src/main/java/com/nullble/goatnetherportals/GNPCommandTabCompleter.java
+/app/src/main/java/com/nullble/goatnetherportals/PortalFrame.java
