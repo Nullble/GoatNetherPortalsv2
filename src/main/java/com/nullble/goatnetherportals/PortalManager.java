@@ -33,6 +33,7 @@ import org.bukkit.block.TileState;
 import org.bukkit.command.CommandSender;
 import org.bukkit.configuration.ConfigurationSection;
 import org.bukkit.configuration.file.YamlConfiguration;
+import org.bukkit.event.block.BlockIgniteEvent;
 //import org.bukkit.craftbukkit.CraftWorld;
 import org.bukkit.entity.ArmorStand;
 import org.bukkit.entity.Entity;
@@ -49,7 +50,7 @@ import com.griefdefender.lib.flowpowered.math.vector.Vector3i;
 import com.jeff_media.customblockdata.CustomBlockData;
 //import com.nullble.nulzone.NulZone;
 import com.nullble.goatnetherportals.DetectionRegion;
-import com.nullble.goatnetherportals.PortalManager.PortalFrame;
+import com.nullble.goatnetherportals.PortalFrame;
 import com.sk89q.worldedit.EditSession;
 import com.sk89q.worldedit.WorldEdit;
 import com.sk89q.worldedit.bukkit.BukkitAdapter;
@@ -84,7 +85,7 @@ public class PortalManager {
     private YamlConfiguration globalPortalMap;
     public final Map<UUID, Long> recentIgniteTimestamps = new HashMap<>();
     private final Set<UUID> igniteCooldown = ConcurrentHashMap.newKeySet();
-    private final Map<UUID, YamlConfiguration> queuedPlayerConfigs = new ConcurrentHashMap<>();
+    private final Map<String, Portal> portalCache = new ConcurrentHashMap<>();
     private final Map<String, Long> recentScanLock = new HashMap<>();
     private final java.util.Set<String> spawnedMarkers =
             java.util.Collections.newSetFromMap(new java.util.concurrent.ConcurrentHashMap<>());
@@ -99,15 +100,312 @@ public class PortalManager {
     public static final UUID SERVER_UUID = UUID.fromString("00000000-0000-0000-0000-000000000001");
     private final Map<UUID, String> recentPortalEntries = new HashMap<>();
 
-    public YamlConfiguration getOrCreatePlayerConfig(UUID uuid) {
-        return queuedPlayerConfigs.computeIfAbsent(uuid, this::getConfig);
+    public void savePortal(Portal portal) {
+        if (portal == null) {
+            plugin.getLogger().warning("[GNP-DEBUG] savePortal called with a null portal.");
+            return;
+        }
+        plugin.getLogger().info("[GNP-DEBUG] Saving portal " + portal.getLinkCode() + " for owner " + portal.getOwner() + " in world " + portal.getWorld().getName());
+        File playerFile = new File(dataFolder, portal.getOwner().toString() + ".yml");
+        YamlConfiguration config = YamlConfiguration.loadConfiguration(playerFile);
+
+        String linkCodePath = "portals." + portal.getLinkCode();
+        config.set(linkCodePath + ".owner", portal.getOwner().toString());
+
+        String worldPath = linkCodePath + ".worlds." + portal.getWorld().getName();
+        config.set(worldPath + ".location.x", portal.getLocation().getX());
+        config.set(worldPath + ".location.y", portal.getLocation().getY());
+        config.set(worldPath + ".location.z", portal.getLocation().getZ());
+        config.set(worldPath + ".diamondOverride", portal.hasDiamondOverride());
+
+        if (portal.getFrame() != null) {
+            config.set(worldPath + ".frame.orientation", portal.getFrame().orientation);
+            config.set(worldPath + ".frame.width", portal.getFrame().width);
+            config.set(worldPath + ".frame.height", portal.getFrame().height);
+            config.set(worldPath + ".frame.bottomLeft", formatCoord(portal.getFrame().bottomLeft));
+        }
+
+        try {
+            if (!dataFolder.exists()) {
+                plugin.getLogger().severe("[GNP-DEBUG] Player data folder does not exist! Attempting to create it...");
+                if (!dataFolder.mkdirs()) {
+                    plugin.getLogger().severe("[GNP-DEBUG] FAILED to create player data folder. Portals will not be saved.");
+                    return;
+                }
+            }
+            config.save(playerFile);
+            plugin.getLogger().info("[GNP-DEBUG] Portal data saved successfully to " + playerFile.getPath());
+            portalCache.put(portal.getLinkCode() + ":" + portal.getWorld().getName(), portal);
+        } catch (IOException e) {
+            plugin.getLogger().severe("Could not save portal " + portal.getLinkCode() + " for player " + portal.getOwner());
+            e.printStackTrace();
+        }
     }
 
-    public boolean playerYamlHasLocationFor(UUID uuid, String linkCode, String worldName) {      // #102
-        YamlConfiguration config = getOrCreatePlayerConfig(uuid);                                 // #103
-        String base = "links." + linkCode + "." + worldName + ".location";                        // #104
-        return config.contains(base);                                                             // #105
-    }                                                                                             // #106
+    public void restorePortal(String linkCode, String worldName, CommandSender sender) {
+        File backupFile = new File(new File(plugin.getDataFolder(), "backups"), linkCode + "-" + worldName + ".yml");
+        if (!backupFile.exists()) {
+            sender.sendMessage("§cBackup not found for portal: " + linkCode + " in world " + worldName);
+            return;
+        }
+
+        YamlConfiguration backupConfig = YamlConfiguration.loadConfiguration(backupFile);
+        String basePath = "portal";
+
+        UUID ownerUUID = UUID.fromString(backupConfig.getString(basePath + ".owner"));
+        World world = Bukkit.getWorld(backupConfig.getString(basePath + ".world"));
+        if (world == null) {
+            sender.sendMessage("§cCannot restore portal. World '" + backupConfig.getString(basePath + ".world") + "' is not loaded.");
+            return;
+        }
+    
+        Location location = new Location(
+            world,
+            backupConfig.getDouble(basePath + ".location.x"),
+            backupConfig.getDouble(basePath + ".location.y"),
+            backupConfig.getDouble(basePath + ".location.z")
+        );
+
+        int width = backupConfig.getInt(basePath + ".frame.width");
+        int height = backupConfig.getInt(basePath + ".frame.height");
+        String orientation = backupConfig.getString(basePath + ".frame.orientation");
+        Location corner = parseCoord(backupConfig.getString(basePath + ".frame.bottomLeft"));
+        corner.setWorld(world);
+
+        buildPortalFrame(corner, width, height, orientation);
+
+        PortalFrame frame = scanFullPortalFrame(location);
+        if (frame == null) {
+            sender.sendMessage("§eWarning: Could not validate the restored portal frame. The data has been restored, but the frame may need to be lit manually.");
+        }
+
+        Portal portal = new Portal(linkCode, ownerUUID, location, frame);
+        portal.setDiamondOverride(backupConfig.getBoolean(basePath + ".diamondOverride"));
+
+        savePortal(portal);
+
+        if (frame != null) {
+            spawnPortalMarker(frame, linkCode, ownerUUID);
+        }
+
+        sender.sendMessage("§aPortal " + linkCode + " has been restored.");
+
+        backupFile.delete();
+    }
+
+    private void buildPortalFrame(Location corner, int width, int height, String orientation) {
+        World world = corner.getWorld();
+        int dx = orientation.equalsIgnoreCase("X") ? 1 : 0;
+        int dz = orientation.equalsIgnoreCase("Z") ? 0 : 1;
+
+        // Build frame
+        for (int i = 0; i < width; i++) {
+            corner.clone().add(i * dx, 0, i * dz).getBlock().setType(Material.OBSIDIAN);
+            corner.clone().add(i * dx, height - 1, i * dz).getBlock().setType(Material.OBSIDIAN);
+        }
+        for (int i = 1; i < height - 1; i++) {
+            corner.clone().add(0, i, 0).getBlock().setType(Material.OBSIDIAN);
+            corner.clone().add((width - 1) * dx, i, (width - 1) * dz).getBlock().setType(Material.OBSIDIAN);
+        }
+    
+        // Ignite
+        Location igniteLoc = corner.clone().add(dx, 1, dz);
+        tryTriggerNaturalPortal(igniteLoc);
+    }
+
+    public void movePortal(String linkCode, Location newLocation, CommandSender sender) {
+        World world = newLocation.getWorld();
+        if (world == null) {
+            sender.sendMessage("§cCannot move portal, world could not be determined.");
+            return;
+        }
+
+        Portal portal = getPortal(linkCode, world.getName());
+        if (portal == null) {
+            sender.sendMessage("§cPortal with link code '" + linkCode + "' not found in this world.");
+            return;
+        }
+
+        if (portal.getFrame() == null) {
+            sender.sendMessage("§cCannot move portal as its frame data is missing.");
+            return;
+        }
+
+        // Clear the old portal frame and marker
+        clearObsidianFrame(portal.getFrame());
+        removeMarker(linkCode, world);
+
+        // Assume player location is the new bottom-left corner
+        Location newCorner = newLocation.getBlock().getLocation();
+        portal.setLocation(newCorner);
+
+        // Re-build the frame at the new location
+        int frameWidth = portal.getFrame().width;
+        int frameHeight = portal.getFrame().height;
+        String orientation = portal.getFrame().orientation;
+
+        buildPortalFrame(newCorner, frameWidth, frameHeight, orientation);
+
+        // Try to scan the new frame
+        Location portalBlockLoc = newCorner.clone().add(
+            orientation.equalsIgnoreCase("X") ? 1 : 0, 1,
+            orientation.equalsIgnoreCase("Z") ? 1 : 0
+        );
+
+        PortalFrame newFrame = scanFullPortalFrame(portalBlockLoc);
+        if (newFrame == null) {
+            sender.sendMessage("§eWarning: Could not validate the new portal frame. It may need to be lit manually.");
+        }
+        portal.setFrame(newFrame);
+
+        savePortal(portal);
+
+        if (newFrame != null) {
+            spawnPortalMarker(newFrame, linkCode, portal.getOwner());
+        }
+
+        sender.sendMessage("§aPortal " + linkCode + " has been moved to your location in " + world.getName() + ".");
+    }
+
+    private void clearObsidianFrame(PortalFrame frame) {
+        if (frame == null || frame.bottomLeft == null || frame.bottomLeft.getWorld() == null) return;
+        World world = frame.bottomLeft.getWorld();
+        int dx = frame.orientation.equalsIgnoreCase("X") ? 1 : 0;
+        int dz = frame.orientation.equalsIgnoreCase("Z") ? 1 : 0;
+
+        // Clear the frame
+        for (int i = 0; i < frame.width; i++) {
+            frame.bottomLeft.clone().add(i * dx, 0, i * dz).getBlock().setType(Material.AIR);
+            frame.bottomLeft.clone().add(i * dx, frame.height - 1, i * dz).getBlock().setType(Material.AIR);
+        }
+        for (int i = 1; i < frame.height - 1; i++) {
+            frame.bottomLeft.clone().add(0, i, 0).getBlock().setType(Material.AIR);
+            frame.bottomLeft.clone().add((frame.width - 1) * dx, i, (frame.width - 1) * dz).getBlock().setType(Material.AIR);
+        }
+
+        // Also clear the portal blocks inside
+        clearPortalBlocks(frame);
+    }
+
+    public boolean isBlockInFrame(Location blockLoc, PortalFrame frame) {
+        Location bottomLeft = frame.bottomLeft;
+        int width = frame.width;
+        int height = frame.height;
+        String orientation = frame.orientation;
+        int dx = orientation.equalsIgnoreCase("X") ? 1 : 0;
+        int dz = orientation.equalsIgnoreCase("Z") ? 1 : 0;
+    
+        // Check bottom and top rows
+        for (int i = 0; i < width; i++) {
+            Location bottomBlock = bottomLeft.clone().add(i * dx, 0, i * dz);
+            if (blockLoc.getBlockX() == bottomBlock.getBlockX() && blockLoc.getBlockY() == bottomBlock.getBlockY() && blockLoc.getBlockZ() == bottomBlock.getBlockZ()) return true;
+
+            Location topBlock = bottomLeft.clone().add(i * dx, height - 1, i * dz);
+            if (blockLoc.getBlockX() == topBlock.getBlockX() && blockLoc.getBlockY() == topBlock.getBlockY() && blockLoc.getBlockZ() == topBlock.getBlockZ()) return true;
+        }
+    
+        // Check left and right columns (excluding corners which are covered above)
+        for (int i = 1; i < height - 1; i++) {
+            Location leftBlock = bottomLeft.clone().add(0, i, 0);
+            if (blockLoc.getBlockX() == leftBlock.getBlockX() && blockLoc.getBlockY() == leftBlock.getBlockY() && blockLoc.getBlockZ() == leftBlock.getBlockZ()) return true;
+    
+            Location rightBlock = bottomLeft.clone().add((width - 1) * dx, i, (width - 1) * dz);
+            if (blockLoc.getBlockX() == rightBlock.getBlockX() && blockLoc.getBlockY() == rightBlock.getBlockY() && blockLoc.getBlockZ() == rightBlock.getBlockZ()) return true;
+        }
+
+        return false;
+    }
+
+    public Portal loadPortal(String linkCode, String worldName) {
+        String cacheKey = linkCode + ":" + worldName;
+        if (portalCache.containsKey(cacheKey)) {
+            return portalCache.get(cacheKey);
+        }
+
+        UUID ownerUUID = getPortalOwner(linkCode);
+        if (ownerUUID == null) {
+            return null;
+        }
+
+        File playerFile = new File(dataFolder, ownerUUID.toString() + ".yml");
+        if (!playerFile.exists()) {
+            return null;
+        }
+
+        YamlConfiguration config = YamlConfiguration.loadConfiguration(playerFile);
+        String worldPath = "portals." + linkCode + ".worlds." + worldName;
+
+        if (!config.contains(worldPath)) {
+            return null;
+        }
+
+        World world = Bukkit.getWorld(worldName);
+        if (world == null) {
+            return null;
+        }
+
+        Location location = new Location(
+                world,
+                config.getDouble(worldPath + ".location.x"),
+                config.getDouble(worldPath + ".location.y"),
+                config.getDouble(worldPath + ".location.z")
+        );
+
+        PortalFrame frame = null;
+        if (config.contains(worldPath + ".frame")) {
+            frame = scanFullPortalFrame(location);
+        }
+
+        Portal portal = new Portal(linkCode, ownerUUID, location, frame);
+        portal.setDiamondOverride(config.getBoolean(worldPath + ".diamondOverride"));
+
+        portalCache.put(cacheKey, portal);
+        return portal;
+    }
+
+    public Portal getPortal(String linkCode, String worldName) {
+        return loadPortal(linkCode, worldName);
+    }
+
+    public Location getLinkedPortalLocation(String linkCode, World currentWorld) {
+        UUID ownerUUID = getPortalOwner(linkCode);
+        if (ownerUUID == null) {
+            return null;
+        }
+
+        File playerFile = new File(dataFolder, ownerUUID.toString() + ".yml");
+        if (!playerFile.exists()) {
+            return null;
+        }
+
+        YamlConfiguration config = YamlConfiguration.loadConfiguration(playerFile);
+        String linkCodeWorldsPath = "portals." + linkCode + ".worlds";
+        if (!config.contains(linkCodeWorldsPath)) {
+            return null;
+        }
+
+        ConfigurationSection worldsSection = config.getConfigurationSection(linkCodeWorldsPath);
+        for (String worldName : worldsSection.getKeys(false)) {
+            if (!worldName.equals(currentWorld.getName())) {
+                String worldPath = linkCodeWorldsPath + "." + worldName;
+                World world = Bukkit.getWorld(worldName);
+                if (world != null) {
+                    Portal linkedPortal = loadPortal(linkCode, worldName);
+                    if (linkedPortal != null && linkedPortal.getFrame() != null) {
+                        return getSafeTeleportLocation(linkedPortal.getFrame().bottomLeft, linkedPortal.getFrame().width, linkedPortal.getFrame().height, linkedPortal.getFrame().orientation);
+                    }
+                    // Fallback
+                    return new Location(
+                        world,
+                        config.getDouble(worldPath + ".location.x") + 0.5,
+                        config.getDouble(worldPath + ".location.y") + 1,
+                        config.getDouble(worldPath + ".location.z") + 0.5
+                    );
+                }
+            }
+        }
+        return null;
+    }
 
     public UUID getUUIDFromName(String playerName) {
         OfflinePlayer offline = null;
@@ -128,35 +426,26 @@ public class PortalManager {
     private void debugScan(String label, Location loc) {
         plugin.debugLog("🌀 [SCAN] " + label + " @ (" + loc.getBlockX() + ", " + loc.getBlockY() + ", " + loc.getBlockZ() + ")");
     }
+    public YamlConfiguration getOrCreatePlayerConfig(UUID uuid) {
+        File file = new File(dataFolder, uuid.toString() + ".yml");
+        if (!file.exists()) {
+            try {
+                file.createNewFile();
+            } catch (IOException e) {
+                e.printStackTrace();
+            }
+        }
+        return YamlConfiguration.loadConfiguration(file);
+    }
 
- // ⛓️ Helper struct
-    public static class PortalFrame {
-        public final int width;
-        public final int height;
-        public final String orientation;
-        public Location cornerMarker; // Exact location of the marker (if created)
-
-        public final Location bottomLeft;
-        public final Location bottomRight;
-        public final Location topLeft;
-        public final Location topRight;
-
-        public final List<Block> portalBlocks; // ✅ NEW FIELD
-
-        public PortalFrame(int width, int height, String orientation,
-                           Location bottomLeft, Location bottomRight,
-                           Location topLeft, Location topRight,
-                           List<Block> portalBlocks) {
-            this.width = width;
-            this.height = height;
-            this.orientation = orientation;
-            this.bottomLeft = bottomLeft;
-            this.bottomRight = bottomRight;
-            this.topLeft = topLeft;
-            this.topRight = topRight;
-            this.portalBlocks = portalBlocks; // ✅ NEW FIELD
+    private void saveConfig(UUID uuid, YamlConfiguration config) {
+        try {
+            config.save(new File(dataFolder, uuid.toString() + ".yml"));
+        } catch (IOException e) {
+            e.printStackTrace();
         }
     }
+ // ⛓️ Helper struct
 
     public PortalManager(GoatNetherPortals plugin) {
         this.plugin = plugin;
@@ -164,7 +453,7 @@ public class PortalManager {
         if (!dataFolder.exists()) dataFolder.mkdirs();
         this.linkCodeKey = new NamespacedKey(plugin, "linkCode");
         this.ownerKey = new NamespacedKey(plugin, "ownerUUID");
-        
+
         this.globalPortalMapFile = new File(plugin.getDataFolder(), "portalMap.yml");
         if (!globalPortalMapFile.exists()) {
             try { globalPortalMapFile.createNewFile(); } catch (IOException e) { e.printStackTrace(); }
@@ -174,381 +463,13 @@ public class PortalManager {
 
     }
 
-    public void setPortal(String playerName, boolean isNether, Location loc) {
-        UUID uuid = getUUIDFromName(playerName);
-        YamlConfiguration config = getOrCreatePlayerConfig(uuid);
 
-        String path = isNether ? "nether" : "overworld";
-        String inversePath = isNether ? "overworld" : "nether";
 
-        if (loc == null) {
-            config.set(path, null);
-        } else {
-            // Check if a linkCode already exists on the other side
-        	//String linkCode = getOrCreateSharedLinkCode(config, path, inversePath);
-        	String linkCode = generateUniqueLinkCode(uuid);
 
-            config.set(path + ".world", loc.getWorld().getName());
-            config.set(path + ".x", loc.getBlockX());
-            config.set(path + ".y", loc.getBlockY());
-            config.set(path + ".z", loc.getBlockZ());
-            config.set(path + ".linkCode", linkCode);
 
-            /* Save to global portal map
-            addPortalToGlobalMap(linkCode, loc, true, uuid);
-            savePortalMapToDisk();*/
-            addPortalToGlobalMap(linkCode, uuid); //THIS REPALCED THE ABOVE DONT FOR GET YOU CAN ROLL IT BACK
 
-        }
 
-        saveConfig(uuid, config);
-    }
 
-    public Location getLinkedPortal(String playerName, String targetWorld) {
-        UUID uuid = getUUIDFromName(playerName);
-        File file = new File(dataFolder, uuid.toString() + ".yml");
-        YamlConfiguration config = YamlConfiguration.loadConfiguration(file);
-
-        ConfigurationSection links = config.getConfigurationSection("links");
-        if (links == null) return null;
-
-        for (String code : links.getKeys(false)) {
-            ConfigurationSection section = links.getConfigurationSection(code);
-            if (section == null) continue;
-
-            if (section.contains(targetWorld + ".location")) {
-                double x = section.getDouble(targetWorld + ".location.x");
-                double y = section.getDouble(targetWorld + ".location.y");
-                double z = section.getDouble(targetWorld + ".location.z");
-                return new Location(Bukkit.getWorld(targetWorld), x, y, z);
-            }
-        }
-
-        return null;
-    }
-
-
-
-    public void clearPortal(UUID uuid) {
-        File file = new File(dataFolder, uuid.toString() + ".yml");
-        if (file.exists()) file.delete();
-    }
-
-    public YamlConfiguration getConfig(UUID uuid) {
-        File file = new File(dataFolder, uuid.toString() + ".yml");
-        return YamlConfiguration.loadConfiguration(file);
-    }
-
-    
-    public YamlConfiguration getGlobalPortalMap() {
-        return plugin.getGlobalPortalMap();
-    }
-
-
-    private void saveConfig(UUID uuid, YamlConfiguration config) {
-        try {
-            config.save(new File(dataFolder, uuid.toString() + ".yml"));
-        } catch (IOException e) {
-            e.printStackTrace();
-        }
-    }
-
-    
-    public void setAnchor(String playerName, Location loc) {
-    	UUID uuid = getUUIDFromName(playerName);
-    	YamlConfiguration config = getOrCreatePlayerConfig(uuid);
-
-    	saveLocation(config, "anchor", loc);
-    	saveConfig(uuid, config);
-
-    }
-
-    public Location getAnchor(String playerName) {
-    	UUID uuid = getUUIDFromName(playerName);
-    	YamlConfiguration config = getOrCreatePlayerConfig(uuid);
-
-        return loadLocation(config, "anchor");
-    }
-
-    private void saveLocation(YamlConfiguration config, String path, Location loc) {
-        if (loc == null) {
-            config.set(path, null);
-        } else {
-            config.set(path + ".world", loc.getWorld().getName());
-            config.set(path + ".x", loc.getBlockX());
-            config.set(path + ".y", loc.getBlockY());
-            config.set(path + ".z", loc.getBlockZ());
-        }
-    }
-
-    private Location deserializeLocation(World world, ConfigurationSection section) {
-        if (section == null || world == null) return null;
-        double x = section.getDouble("x");
-        double y = section.getDouble("y");
-        double z = section.getDouble("z");
-        return new Location(world, x, y, z);
-    }
-
-    private Location loadLocation(YamlConfiguration config, String path) {
-        String worldName = config.getString(path + ".world");
-        if (worldName == null) return null;
-        World world = Bukkit.getWorld(worldName);
-        if (world == null) return null;
-
-        double x = config.getDouble(path + ".x");
-        double y = config.getDouble(path + ".y");
-        double z = config.getDouble(path + ".z");
-        return new Location(world, x, y, z);
-    }
-    
-    public boolean recoverAnchor(Player player) {
-        String name = player.getName();
-        Location lastAnchor = getAnchor(name);
-        if (lastAnchor == null) return false;
-
-        World world = lastAnchor.getWorld();
-        Location best = null;
-        double bestDist = Double.MAX_VALUE;
-
-        int radius = plugin.getConfig().getInt("portalSearchRadius", 50);
-
-        for (int x = -radius; x <= radius; x++) {
-            for (int y = -10; y <= 10; y++) {
-                for (int z = -radius; z <= radius; z++) {
-                    Location loc = lastAnchor.clone().add(x, y, z);
-                    Material mat = loc.getBlock().getType();
-                    if (mat == Material.NETHER_PORTAL || mat == Material.OBSIDIAN) {
-                        if (isInsideNulZone(loc)) continue;
-                        double dist = loc.distanceSquared(player.getLocation());
-                        if (dist < bestDist) {
-                            bestDist = dist;
-                            best = loc;
-                        }
-                    }
-                }
-            }
-        }
-
-        if (best != null) {
-            setAnchor(name, best);
-            player.sendMessage("§eYour original anchor was lost. A nearby portal has been relinked.");
-            //plugin.getLogger().info("Anchor recovered for " + name + " at " + best);
-            return true;
-        }
-
-        return false;
-    }
-    private boolean isInsideNulZone(Location loc) {
-        return false;
-        /*if (loc == null || loc.getWorld() == null) return false;
-
-        NulZone nulZone = (NulZone) Bukkit.getPluginManager().getPlugin("NulZone");
-        if (nulZone == null || !nulZone.isEnabled()) return false;
-
-        return nulZone.getZoneManager().getMatchingZone(
-            loc.getWorld().getName(), loc.getBlockX(), loc.getBlockZ()
-        ) != null;*/
-    }
-    
-    
-    
-    public void saveLink(@Nullable String playerName, Location loc, boolean isReturn, @Nullable String linkCode, @Nullable PortalFrame frameOverride) {
-        plugin.debugLog("saveLink called.");
-    	UUID uuid = (playerName != null) ? getUUIDFromName(playerName) : SERVER_UUID;
-
-        
-        String worldName = loc.getWorld().getName();
-
-    	if (frameOverride == null) {
-			plugin.debugLog("❌ saveLink() received NULL frameOverride!");
-    	}
-
-        if (playerName == null || loc == null || loc.getWorld() == null) {
-			plugin.debugLog("⚠️ saveLink() short triggered");
-			plugin.debugLog("  playerName = " + playerName);
-			plugin.debugLog("  loc        = " + loc);
-			plugin.debugLog("  world      = " + (loc != null ? loc.getWorld() : "null"));
-            return;
-        }
-        if (linkCode == null) {
-			plugin.debugLog("❌ saveLink() called with null linkCode — this is invalid and should be fixed upstream.");
-            return;
-        } else {
-            // Use existing code
-			plugin.debugLog("🔗 saveLink() using provided linkCode: " + linkCode);
-        }
-        World world = loc.getWorld();  // ✅ Add this line
-
-
-        PortalFrame original = (frameOverride != null) ? frameOverride : scanFullPortalFrame(loc);
-        if (original == null) {
-            plugin.debugLog("Original frame is null, returning.");
-            return;
-        }
-        plugin.debugLog("Original frame scanned successfully.");
-
-        // Defensive copy
-        PortalFrame frame = new PortalFrame(
-        	    original.width,
-        	    original.height,
-        	    original.orientation,
-        	    original.bottomLeft,
-        	    original.bottomRight,
-        	    original.topLeft,
-        	    original.topRight,
-        	    original.portalBlocks
-        	);
-
-
-        if (frame == null) {
-            plugin.debugLog("❌ saveLink() failed, frame is null");
-            return;
-        }
-
-        if (frameOverride != null) {
-            if (frameOverride.bottomLeft == null || frameOverride.bottomRight == null ||
-                frameOverride.topLeft == null || frameOverride.topRight == null) {
-                plugin.debugLog("❌ saveLink() - Frame has null corners. Aborting save.");
-                plugin.debugLog("BottomLeft: " + frameOverride.bottomLeft);
-                plugin.debugLog("BottomRight: " + frameOverride.bottomRight);
-                plugin.debugLog("TopLeft: " + frameOverride.topLeft);
-                plugin.debugLog("TopRight: " + frameOverride.topRight);
-                return;
-            }
-        }
-
-        String orientation = frame.orientation;
-        Location frameCorner = frame.bottomLeft;
-        plugin.debugLog("Frame orientation: " + orientation + ", corner: " + frameCorner);
-
-        String locKey = "portal::" + loc.getWorld().getName() + "::" + loc.getBlockX() + "," + loc.getBlockY() + "," + loc.getBlockZ();
-        String playerKey = "player::" + uuid + "::" + worldName;
-
-        YamlConfiguration config = getOrCreatePlayerConfig(uuid);
-        //config.set("name", playerName);
-        config.set("name", (playerName != null) ? playerName : "Server");
-
-        ConfigurationSection linksSection = config.getConfigurationSection("links");
-        if (linksSection == null) linksSection = config.createSection("links");
-
-        ConfigurationSection codeSection = linksSection.getConfigurationSection(linkCode);
-        if (codeSection == null) codeSection = linksSection.createSection(linkCode);
-
-        ConfigurationSection worldSection = codeSection.getConfigurationSection(worldName);
-        if (worldSection == null) worldSection = codeSection.createSection(worldName);
-
-        if (!worldSection.contains("location")) {
-            ConfigurationSection locSection = worldSection.createSection("location");
-            locSection.set("world", loc.getWorld().getName());
-            locSection.set("x", loc.getX());
-            locSection.set("y", loc.getY());
-            locSection.set("z", loc.getZ());
-            locSection.set("yaw", loc.getYaw());
-            locSection.set("pitch", loc.getPitch());
-            plugin.debugLog("Saved new location for link: " + linkCode);
-        } else {
-            plugin.debugLog("🛑 [saveLink] Skipping overwrite of existing location for link: " + linkCode);
-        }
-
-        Location cornerCheckLoc = loadUniversalLocation(worldSection.getConfigurationSection("frame.corner"), world);
-
-        if (hasDiamondInCorners(cornerCheckLoc, frame.width, frame.height, orientation)) {
-            config.set("links." + linkCode + ".diamondoverride", true);
-            plugin.debugLog("Diamond override set for link: " + linkCode);
-        }
-
-
-        if (hasDiamondInCorners(frameCorner, frame.width, frame.height, orientation)) {
-            config.set("links." + linkCode + ".diamondoverride", true);
-            plugin.debugLog("Diamond override set for link: " + linkCode);
-        }
-
-        ConfigurationSection frameSection = worldSection.createSection("frame");
-        frameSection.set("orientation", orientation);
-
-        ConfigurationSection cornerSection = frameSection.createSection("corner");
-        if (frame.bottomLeft == null) {
-            plugin.debugLog("❌ frame.bottomLeft is NULL during saveLink");
-        } else {
-            cornerSection.set("Bottom-Left", formatCoord(frame.bottomLeft));
-        }
-        if (frame.bottomRight == null) {
-            plugin.debugLog("❌ frame.bottomRight is NULL during saveLink");
-        } else {
-            cornerSection.set("Bottom-Right", formatCoord(frame.bottomRight));
-        }
-        if (frame.topLeft == null) {
-            plugin.debugLog("❌ frame.topLeft is NULL during saveLink");
-        } else {
-            cornerSection.set("Top-Left", formatCoord(frame.topLeft));
-        }
-        if (frame.topRight == null) {
-            plugin.debugLog("❌ frame.topRight is NULL during saveLink");
-        } else {
-            cornerSection.set("Top-Right", formatCoord(frame.topRight));
-        }
-        plugin.debugLog("Saved frame corners.");
-
-/*
-        cornerSection.set("Bottom-Left", formatCoord(frame.bottomLeft));
-        cornerSection.set("Bottom-Right", formatCoord(frame.bottomRight));
-        cornerSection.set("Top-Left", formatCoord(frame.topLeft));
-        cornerSection.set("Top-Right", formatCoord(frame.topRight));*/
-
-        Location min = frameCorner.clone();
-        Location max = frameCorner.clone().add(
-            orientation.equalsIgnoreCase("X") ? frame.width - 1 : 0,
-            frame.height - 1,
-            orientation.equalsIgnoreCase("Z") ? frame.width - 1 : 0
-        );
-
-        int expandX = orientation.equalsIgnoreCase("X") ? 0 : 1;
-        int expandZ = orientation.equalsIgnoreCase("Z") ? 0 : 1;
-
-        Location expandedMin = min.clone().subtract(expandX, 0, expandZ);
-        Location expandedMax = max.clone().add(expandX, 0, expandZ);
-
-        ConfigurationSection interiorSection = worldSection.createSection("interior");
-        interiorSection.set("min", formatCoord(expandedMin));
-        interiorSection.set("max", formatCoord(expandedMax));
-        plugin.debugLog("Saved interior section.");
-     // ✅ Save marker info
-        Location markerLoc = frame.cornerMarker != null ? frame.cornerMarker : loc.clone().add(0.5, 1.5, 0.5);
-
-        if (markerLoc != null) {
-            ConfigurationSection markerSection = worldSection.createSection("marker");
-            markerSection.set("x", markerLoc.getX());
-            markerSection.set("y", markerLoc.getY());
-            markerSection.set("z", markerLoc.getZ());
-            markerSection.set("corner", formatCoord(frame.bottomLeft));
-            markerSection.set("orientation", orientation);
-            plugin.debugLog("Saved marker section.");
-        } else {
-            plugin.debugLog("❌ markerLoc is NULL — skipping marker save");
-        }
-
-        detectionRegions.add(new DetectionRegion(expandedMin, expandedMax, linkCode));
-        plugin.debugLog("📦 Registered detection region: " + formatLoc(expandedMin) + " → " + formatLoc(expandedMax));
-
-	     // If both exist, nothing to generate. If neither exists, bail (shouldn't happen after save).
-
-     // 🪧 Spawn marker (for Portal-A)
-        plugin.debugLog("🪧 [MARKER] Spawning marker for Portal-A at: " + frame.bottomLeft + " for code: " + linkCode);
-        //spawnPortalMarker(frame, linkCode, uuid);
-        queueMarkerSpawn(frame, linkCode, uuid);
-
-     String otherWorldName = plugin.getOppositeWorld(worldName);
-     Location dest = getPendingPortalLocation(linkCode, otherWorldName, uuid);
-
-     if (dest != null && worldSection.getKeys(false).size() > 0 && worldName.equals(getFirstWorldForLink(linkCode, uuid))) {
-         // 🔁 Only allow the *first portal created* to trigger the opposite-world pairing
-         plugin.debugLog("Destination found, forcing paired portal generation.");
-         forceGeneratePairedPortal(linkCode, worldName, uuid, frame);
-     }
-
-        commitQueuedData(uuid);
-        plugin.debugLog("Committed queued data.");
-    }
 
     private boolean isCooldownActive(String key, long cooldownMillis) {
         long now = System.currentTimeMillis();
@@ -611,53 +532,10 @@ public class PortalManager {
         }
     }
 
-    public void commitQueuedData(UUID uuid) {
-        YamlConfiguration config = queuedPlayerConfigs.remove(uuid);
-        if (config == null) return;
 
-        File file = new File(dataFolder, uuid.toString() + ".yml");
 
-        try {
-            config.save(file);
-        } catch (IOException e) {
-            plugin.debugLog("❌ Failed to commit player data for " + uuid);
-            e.printStackTrace();
-        }
-    }
-
-    public Location getLinkedLocation(String playerName, String fromWorld, boolean isReturn) {
-        UUID uuid = getUUIDFromName(playerName);
-        YamlConfiguration config = getOrCreatePlayerConfig(uuid);
-
-        ConfigurationSection links = config.getConfigurationSection("links");
-        if (links == null) return null;
-
-        for (String code : links.getKeys(false)) {
-            ConfigurationSection link = links.getConfigurationSection(code);
-            if (link == null) continue;
-
-            for (String portalKey : List.of("portalA", "portalB")) {
-                ConfigurationSection portal = link.getConfigurationSection(portalKey);
-                if (portal == null) continue;
-
-                String world = portal.getString("world");
-                if (world == null || world.equalsIgnoreCase(fromWorld)) continue;
-
-                ConfigurationSection loc = portal.getConfigurationSection("location");
-                if (loc == null) continue;
-
-                World targetWorld = Bukkit.getWorld(world);
-                if (targetWorld == null) continue;
-
-                double x = loc.getDouble("x");
-                double y = loc.getDouble("y");
-                double z = loc.getDouble("z");
-
-                return new Location(targetWorld, x, y, z);
-            }
-        }
-
-        return null;
+    private boolean isInsideNulZone(Location loc) {
+        return false;
     }
 
     public Location findSafePortalSpotInClaim(Player player, String worldName) {
@@ -714,105 +592,146 @@ public class PortalManager {
 
     public void tryTriggerNaturalPortal(Location frameBase) {
         World world = frameBase.getWorld();
+        if (world == null) return;
+
         Block blockAbove = frameBase.clone().add(0, 1, 0).getBlock();
 
-        // Place fire block on top of obsidian — just like the player would do
         if (blockAbove.getType() == Material.AIR) {
-            blockAbove.setType(Material.FIRE);
-            //plugin.getLogger().info("🔥 Triggered default portal ignition at " + frameBase);
+            // Create and call the event to ensure compatibility with other plugins
+            BlockIgniteEvent igniteEvent = new BlockIgniteEvent(blockAbove, BlockIgniteEvent.IgniteCause.FLINT_AND_STEEL, (Player) null);
+            Bukkit.getPluginManager().callEvent(igniteEvent);
+
+            if (!igniteEvent.isCancelled()) {
+                blockAbove.setType(Material.FIRE);
+                plugin.getLogger().info("[GNP-DEBUG] Successfully set fire for portal ignition at " + blockAbove.getLocation());
+            } else {
+                plugin.getLogger().warning("[GNP-DEBUG] Portal ignition was cancelled by another plugin at " + blockAbove.getLocation());
+            }
         } else {
-            //plugin.getLogger().warning("⚠ Cannot place fire above block: " + blockAbove.getType());
+            plugin.getLogger().warning("[GNP-DEBUG] Cannot place fire above block: " + blockAbove.getType() + " at " + blockAbove.getLocation());
         }
     }
 
 
 
 
-    public void registerPortal(Player player, Location loc, String linkCode, PortalFrame frame) {
-        if (frame == null || linkCode == null) {
-            plugin.debugLog("❌ registerPortal() missing frame or linkCode");
-            return;
+
+    public int getPortalPairCount(UUID owner) {
+        File playerFile = new File(dataFolder, owner.toString() + ".yml");
+        if (!playerFile.exists()) {
+            return 0;
+        }
+        YamlConfiguration config = YamlConfiguration.loadConfiguration(playerFile);
+        ConfigurationSection portalsSection = config.getConfigurationSection("portals");
+        if (portalsSection == null) {
+            return 0;
+        }
+        return portalsSection.getKeys(false).size();
+    }
+
+    public List<Portal> findPortalsByOwner(UUID owner) {
+        List<Portal> portals = new ArrayList<>();
+        File playerFile = new File(dataFolder, owner.toString() + ".yml");
+        if (!playerFile.exists()) {
+            return portals;
         }
 
-        // 💡 Corner safety checks
-        if (frame.bottomLeft == null || frame.bottomRight == null || frame.topLeft == null || frame.topRight == null) {
-            plugin.debugLog("❌ registerPortal() - Frame has null corners. Aborting save.");
-            plugin.debugLog("BottomLeft: " + frame.bottomLeft);
-            plugin.debugLog("BottomRight: " + frame.bottomRight);
-            plugin.debugLog("TopLeft: " + frame.topLeft);
-            plugin.debugLog("TopRight: " + frame.topRight);
-            return;
+        YamlConfiguration config = YamlConfiguration.loadConfiguration(playerFile);
+        String portalsPath = "portals";
+        if (!config.contains(portalsPath)) {
+            return portals;
         }
 
-        //UUID uuid = player.getUniqueId();
-        UUID uuid = (player != null) ? player.getUniqueId() : SERVER_UUID;
-        YamlConfiguration config = getOrCreatePlayerConfig(uuid);
-        Location corner = frame.bottomLeft;
-        int width = frame.width;
-        int height = frame.height;
-        String orientation = frame.orientation;
-        String worldName = loc.getWorld().getName();
-
-        // 2. Verify the portal isn't overlapping with another portal's space
-        if (isOverlappingWithExistingPortal(frame, linkCode)) {
-            player.sendMessage("§cThis portal overlaps with an existing portal's space.");
-            return;
-        }
-
-        plugin.debugLog("📦 About to spawn marker for: " + linkCode);
-        //spawnPortalMarker(frame, linkCode, uuid); // ✅ Visual marker
-        queueMarkerSpawn(frame, linkCode, uuid);
-
-        // YAML structure
-        ConfigurationSection links = config.getConfigurationSection("links");
-        if (links == null) links = config.createSection("links");
-
-        ConfigurationSection codeSection = links.getConfigurationSection(linkCode);
-        if (codeSection == null) codeSection = links.createSection(linkCode);
-
-        ConfigurationSection worldSection = codeSection.createSection(worldName);
-
-        // Save origin location
-        ConfigurationSection location = worldSection.createSection("location");
-        location.set("x", corner.getBlockX());
-        location.set("y", corner.getBlockY());
-        location.set("z", corner.getBlockZ());
-
-        // Save frame data
-        ConfigurationSection frameSection = worldSection.createSection("frame");
-        frameSection.set("orientation", orientation);
-        frameSection.set("width", width);
-        frameSection.set("height", height);
-
-        ConfigurationSection frameCorner = frameSection.createSection("corner");
-        frameCorner.set("Bottom-Left", formatCoord(frame.bottomLeft));
-        frameCorner.set("Bottom-Right", formatCoord(frame.bottomRight));
-        frameCorner.set("Top-Left", formatCoord(frame.topLeft));
-        frameCorner.set("Top-Right", formatCoord(frame.topRight));
-
-        config.set("name", player.getName());
-        savePlayerConfig(uuid, config);
-
-        plugin.debugLog("📍 registerPortal() loc = " + loc);
-        saveLink(player.getName(), corner, false, linkCode, frame); // ✅ Only now do we save
-        addPortalToGlobalMap(linkCode, uuid);
-
-        // Auto-generate paired portal if missing
-        String destWorld = plugin.getOppositeWorld(worldName);
-        if (destWorld != null) {
-            ConfigurationSection checkSection = config.getConfigurationSection("links." + linkCode);
-            if (checkSection != null && !checkSection.contains(destWorld)) {
-                Location frameBase = corner.clone();
-                Bukkit.getScheduler().runTaskLater(plugin, () -> {
-                    Location nearby = findNearbyPortalBlock(frameBase);
-                    if (nearby != null) {
-                        PortalFrame scanned = scanFullPortalFrame(nearby);
-                        if (scanned != null) {
-                            forceGeneratePairedPortal(linkCode, worldName, uuid, scanned);
-                        }
+        ConfigurationSection portalsSection = config.getConfigurationSection(portalsPath);
+        for (String linkCode : portalsSection.getKeys(false)) {
+            ConfigurationSection linkCodeSection = portalsSection.getConfigurationSection(linkCode);
+            if (linkCodeSection != null && linkCodeSection.contains("worlds")) {
+                ConfigurationSection worldsSection = linkCodeSection.getConfigurationSection("worlds");
+                for (String worldName : worldsSection.getKeys(false)) {
+                    Portal portal = loadPortal(linkCode, worldName);
+                    if (portal != null) {
+                        portals.add(portal);
                     }
-                }, 3L);
+                }
             }
+        }
+        return portals;
+    }
+
+    public List<Portal> findPortalsByLinkCode(String linkCode) {
+        List<Portal> portals = new ArrayList<>();
+        UUID ownerUUID = getPortalOwner(linkCode);
+        if (ownerUUID == null) {
+            return portals;
+        }
+
+        File playerFile = new File(dataFolder, ownerUUID.toString() + ".yml");
+        if (!playerFile.exists()) {
+            return portals;
+        }
+
+        YamlConfiguration config = YamlConfiguration.loadConfiguration(playerFile);
+        String linkCodeWorldsPath = "portals." + linkCode + ".worlds";
+        if (!config.contains(linkCodeWorldsPath)) {
+            return portals;
+        }
+
+        ConfigurationSection worldsSection = config.getConfigurationSection(linkCodeWorldsPath);
+        for (String worldName : worldsSection.getKeys(false)) {
+            Portal portal = loadPortal(linkCode, worldName);
+            if (portal != null) {
+                portals.add(portal);
+            }
+        }
+        return portals;
+    }
+
+    public void setOwner(String linkCode, UUID newOwnerUUID, CommandSender sender) {
+        UUID oldOwnerUUID = getPortalOwner(linkCode);
+        if (oldOwnerUUID == null) {
+            sender.sendMessage("§cPortal with link code '" + linkCode + "' not found.");
+            return;
+        }
+
+        if (oldOwnerUUID.equals(newOwnerUUID)) {
+            sender.sendMessage("§eThat player is already the owner of this portal.");
+            return;
+        }
+
+        File oldPlayerFile = new File(dataFolder, oldOwnerUUID.toString() + ".yml");
+        YamlConfiguration oldConfig = YamlConfiguration.loadConfiguration(oldPlayerFile);
+        File newPlayerFile = new File(dataFolder, newOwnerUUID.toString() + ".yml");
+        YamlConfiguration newConfig = YamlConfiguration.loadConfiguration(newPlayerFile);
+
+        String portalPath = "portals." + linkCode;
+        ConfigurationSection portalData = oldConfig.getConfigurationSection(portalPath);
+
+        if (portalData == null) {
+            sender.sendMessage("§cCould not find portal data in the old owner's file. The data might be corrupted.");
+            plugin.getGlobalPortalMap().set(linkCode, null);
+            plugin.saveGlobalMap();
+            return;
+        }
+
+        newConfig.set(portalPath, portalData);
+        oldConfig.set(portalPath, null);
+
+        try {
+            oldConfig.save(oldPlayerFile);
+            newConfig.save(newPlayerFile);
+
+            plugin.getGlobalPortalMap().set(linkCode + ".owner", newOwnerUUID.toString());
+            plugin.saveGlobalMap();
+
+            portalCache.keySet().removeIf(key -> key.startsWith(linkCode + ":"));
+
+            OfflinePlayer newOwnerPlayer = Bukkit.getOfflinePlayer(newOwnerUUID);
+            String newOwnerName = newOwnerPlayer.getName() != null ? newOwnerPlayer.getName() : newOwnerUUID.toString();
+            sender.sendMessage("§aPortal link " + linkCode + " has been transferred to " + newOwnerName);
+
+        } catch (IOException e) {
+            sender.sendMessage("§cAn error occurred while saving player data.");
+            e.printStackTrace();
         }
     }
 
@@ -1156,6 +1075,106 @@ public class PortalManager {
         }
     }
 
+    public Location findSafeNearbyLocation(Location center, int radius) {
+        World world = center.getWorld();
+        if (world == null) return null;
+
+        // Define Y-limits based on world type
+        int minY = world.getMinHeight() + 5;
+        int maxY = world.getMaxHeight() - 10; // Extra buffer for building
+        if (world.getEnvironment() == World.Environment.NETHER) {
+            maxY = 123; // 128 - 5, standard nether ceiling
+        }
+
+        List<Location> existingPortalLocations = new ArrayList<>();
+        for (Entity entity : world.getEntitiesByClass(ArmorStand.class)) {
+            if (entity.getScoreboardTags().contains("gnp_marker")) {
+                existingPortalLocations.add(entity.getLocation());
+            }
+        }
+
+        // Spiral search pattern
+        int x = 0, z = 0;
+        int dx = 0, dz = -1;
+        int maxDistSq = radius * radius;
+
+        for (int i = 0; i < maxDistSq; i++) {
+            if ((-radius <= x && x <= radius) && (-radius <= z && z <= radius)) {
+
+                int currentX = center.getBlockX() + x;
+                int currentZ = center.getBlockZ() + z;
+
+                for (int currentY = minY; currentY < maxY; currentY++) {
+                    Location potentialLoc = new Location(world, currentX, currentY, currentZ);
+
+                    if (!world.getWorldBorder().isInside(potentialLoc)) {
+                        continue;
+                    }
+
+                    boolean tooClose = false;
+                    for (Location existing : existingPortalLocations) {
+                        if (existing.distanceSquared(potentialLoc) < 25) { // 5*5
+                            tooClose = true;
+                            break;
+                        }
+                    }
+                    if (tooClose) continue;
+
+                    if (isSafeSpot(potentialLoc)) {
+                        return potentialLoc;
+                    }
+                }
+            }
+
+            // Spiral logic
+            if ((x == z) || (x < 0 && x == -z) || (x > 0 && x == 1 - z)) {
+                int temp = dx;
+                dx = -dz;
+                dz = temp;
+            }
+            x += dx;
+            z += dz;
+        }
+
+        return null; // No safe location found
+    }
+
+    private boolean isSafeSpot(Location loc) {
+        // Check for solid ground
+        if (!loc.clone().add(0, -1, 0).getBlock().getType().isSolid()) {
+            return false;
+        }
+
+        // Check for a 5x5x5 cube of air above the location, which is enough for any portal frame
+        for (int dx = -2; dx <= 2; dx++) {
+            for (int dy = 0; dy < 5; dy++) {
+                for (int dz = -2; dz <= 2; dz++) {
+                    if (!loc.clone().add(dx, dy, dz).getBlock().isPassable()) {
+                        return false;
+                    }
+                }
+            }
+        }
+        return true;
+    }
+
+    public void buildBasicPortalFrame(Location corner) {
+        World world = corner.getWorld();
+        if (world == null) return;
+
+        // Frame
+        for (int i = 0; i < 4; i++) {
+            corner.clone().add(i, 0, 0).getBlock().setType(Material.OBSIDIAN);
+            corner.clone().add(i, 3, 0).getBlock().setType(Material.OBSIDIAN);
+        }
+        for (int i = 1; i < 3; i++) {
+            corner.clone().add(0, i, 0).getBlock().setType(Material.OBSIDIAN);
+            corner.clone().add(3, i, 0).getBlock().setType(Material.OBSIDIAN);
+        }
+        // Ignite
+        corner.clone().add(1, 1, 0).getBlock().setType(Material.FIRE);
+    }
+
     public void tryRegisterArrivalPortal(Location base, String linkCode, UUID owner) {
         if (base == null || linkCode == null || owner == null) return;
 
@@ -1208,8 +1227,93 @@ public class PortalManager {
         }
         return null;
     }
+
+    public boolean hasPortalCreationPermission(Player player) {
+        if (player.hasPermission("goatportals.admin")) {
+            return true;
+        }
+        if (plugin.getLuckPerms() == null) {
+            return true; // No permission plugin, so allow by default.
+        }
+
+        int limit = -1; // -1 for unlimited
+        // Find the highest gnp.limit.<number> permission the player has.
+        for (var node : plugin.getLuckPerms().getUserManager().getUser(player.getUniqueId()).getNodes()) {
+            if (node.getKey().startsWith("gnp.limit.")) {
+                try {
+                    int nodeLimit = Integer.parseInt(node.getKey().substring("gnp.limit.".length()));
+                    if (nodeLimit > limit) {
+                        limit = nodeLimit;
+                    }
+                } catch (NumberFormatException e) {
+                    // Ignore invalid permission nodes like gnp.limit.abc
+                }
+            }
+        }
+
+        if (limit == -1) {
+            return true; // Unlimited if no limit permission is set.
+        }
+
+        int currentPortalPairs = getPortalPairCount(player.getUniqueId());
+        if (currentPortalPairs >= limit) {
+            player.sendMessage("§cYou have reached your portal limit of " + limit + ".");
+            return false;
+        }
+
+        return true;
+    }
+
+
+    public void createPortalPair(UUID owner, Location location, PortalFrame frame) {
+        plugin.getLogger().info("[GNP-DEBUG] createPortalPair called for owner " + owner + " at " + location);
+        Player player = owner.equals(SERVER_UUID) ? null : Bukkit.getPlayer(owner);
+        if (player != null && !hasPortalCreationPermission(player)) {
+            plugin.getLogger().warning("[GNP-DEBUG] Player " + player.getName() + " does not have permission to create a portal.");
+            return;
+        }
+
+        String linkCode = generateUniqueLinkCode();
+        Portal portalA = new Portal(linkCode, owner, location, frame);
+        Location destinationB = convertToOppositeWorldLocation(location);
+        if (destinationB == null) {
+            if (player != null) player.sendMessage("§cCould not determine a destination for this portal.");
+            else plugin.debugLog("Could not determine a destination for this portal. LinkCode: " + linkCode);
+            return;
+        }
+
+        Location safeLocationB = findSafeNearbyLocation(destinationB, 16);
+        if (safeLocationB == null) {
+            if (player != null) player.sendMessage("§cCould not find a safe location for the linked portal.");
+            else plugin.debugLog("Could not find a safe location for the linked portal. LinkCode: " + linkCode);
+            return;
+        }
+
+        copyPortalFrameFromTo(location, safeLocationB, frame.width, frame.height, frame.orientation);
+
+        PortalFrame frameB = scanFullPortalFrame(safeLocationB);
+        if (frameB == null) {
+            if (player != null) player.sendMessage("§cFailed to create the linked portal. Please try again.");
+            else plugin.debugLog("Failed to create the linked portal. LinkCode: " + linkCode);
+            return;
+        }
+
+        Portal portalB = new Portal(linkCode, owner, safeLocationB, frameB);
+        savePortal(portalA);
+        savePortal(portalB);
+        addPortalToGlobalMap(linkCode, owner);
+        spawnPortalMarker(frame, linkCode, owner);
+        spawnPortalMarker(frameB, linkCode, owner);
+
+        if (player != null) {
+            player.sendMessage("§aPortals successfully created with link code: " + linkCode);
+        } else {
+            plugin.debugLog("Portals successfully created with link code: " + linkCode);
+        }
+    }
  
     public void addPortalToGlobalMap(String linkCode, UUID owner) {
+        plugin.getLogger().info("[GNP-DEBUG] Adding portal " + linkCode + " to global map for owner " + owner);
         File file = new File(plugin.getDataFolder(), "portalMap.yml");
         YamlConfiguration yaml = YamlConfiguration.loadConfiguration(file);
 
@@ -1218,11 +1322,13 @@ public class PortalManager {
 
             try {
                 yaml.save(file);
-                plugin.debugLog("✅ Added portal link " + linkCode + " to portalMap.yml");
+                plugin.getLogger().info("[GNP-DEBUG] Successfully saved portal link " + linkCode + " to portalMap.yml");
             } catch (IOException e) {
-                plugin.debugLog("❌ Failed to save portalMap.yml");
+                plugin.getLogger().severe("[GNP-DEBUG] Failed to save portalMap.yml for link code " + linkCode);
                 e.printStackTrace();
             }
+        } else {
+            plugin.getLogger().warning("[GNP-DEBUG] Link code " + linkCode + " already exists in portalMap.yml. Skipping.");
         }
     }
     
@@ -1385,8 +1491,6 @@ public class PortalManager {
         markerSection.set("z", markerLoc.getZ());
         markerSection.set("corner", baseX + "," + baseY + "," + baseZ);
         markerSection.set("orientation", frame.orientation);
-
-        commitQueuedData(ownerUUID);
     }
 
     
@@ -1466,120 +1570,6 @@ public class PortalManager {
         }
     }
 
-    public void tryAutoRegisterPortal(Player player, Location base, @Nullable PortalFrame preScannedFrame) {
-        plugin.debugLog("tryAutoRegisterPortal called.");
-	if (base == null || base.getWorld() == null) {
-            plugin.debugLog("Base or world is null, returning.");
-            return;
-        }
-
-        //UUID uuid = (player != null) ? player.getUniqueId() : UUID.fromString("00000000-0000-0000-0000-000000000001");
-    	UUID uuid = (player != null) ? player.getUniqueId() : SERVER_UUID;
-        String name = (player != null) ? player.getName() : "Server";
-    	
-        World world = base.getWorld();
-        String worldName = world.getName();
-        //UUID uuid = player.getUniqueId();
-     // 🐞 Debug who is triggering the registration
-        if (player != null) {
-            plugin.debugLog("🔍 tryAutoRegisterPortal called by player: " + player.getName());
-        } else {
-            plugin.debugLog("🔍 tryAutoRegisterPortal called by SERVER/dispenser/command block.");
-        }
-        /* ⏱ Spam throttle
-        long now = System.currentTimeMillis();
-        long last = recentIgniteTimestamps.getOrDefault(uuid, 0L);
-        if (now - last < 2000) return;
-        recentIgniteTimestamps.put(uuid, now);*/
-
-        // 🔍 Find nearby portal block
-        Location portalLoc = plugin.getPortalManager().findNearbyPortalBlock(base, 4);
-        if (portalLoc == null || !isValidPortal(portalLoc)) {
-            plugin.debugLog("❌ No valid portal block found near: " + base);
-            return;
-        }
-        plugin.debugLog("Found valid portal block at: " + portalLoc);
-        String linkCode = generateUniqueLinkCode(uuid);
-        if (linkCode == null) {
-            plugin.debugLog("❌ Failed to generate linkCode");
-            return;
-        }
-        plugin.debugLog("Generated link code: " + linkCode);
-        
-        // Store this linkCode immediately to prevent duplicate generation
-        playerPendingLinks.put(uuid, linkCode);
-        
-        // 🧱 Resolve the full frame
-        PortalFrame frame = (preScannedFrame != null)
-            ? preScannedFrame
-            : scanFullPortalFrame(portalLoc);
-
-        if (frame == null) {
-            plugin.debugLog("❌ Portal frame scan failed at: " + portalLoc);
-            return;
-        }
-        plugin.debugLog("Portal frame scanned successfully.");
-
-        // 🔗 Generate a new linkCode
-        //String linkCode = generateUniqueLinkCode(uuid);
-        /*
-         * 
-        if (linkCode == null) {
-            plugin.getLogger().warning("❌ Failed to get or create linkCode for: " + player.getName());
-            return;
-        }*/
-
-        // 💾 Save all portal data to player .yml (frame, interior, detection)
-        plugin.debugLog("💾 Saving portal frame for " + name + " at " + portalLoc + " with code " + linkCode);
-
-        saveLink(name, frame.bottomLeft, false, linkCode, frame);
-        if (uuid.equals(SERVER_UUID)) {
-            plugin.getPortalManager().registerDispenserPortal(uuid, linkCode, frame, worldName);
-        }
-
-        // 🌍 Reserve opposite world (ensures pairing works)
-        String oppositeWorld = plugin.getOppositeWorld(worldName);
-        if (oppositeWorld != null) {
-            plugin.debugLog("Reserving opposite world: " + oppositeWorld);
-            YamlConfiguration config = getOrCreatePlayerConfig(uuid);
-            ConfigurationSection codeSection = config.getConfigurationSection("links." + linkCode);
-            if (codeSection == null) codeSection = config.createSection("links." + linkCode);
-            ConfigurationSection oppSection = codeSection.getConfigurationSection(oppositeWorld);
-            if (oppSection == null || !oppSection.contains("location")) {
-                ConfigurationSection opp = codeSection.createSection(oppositeWorld);
-                opp.set("location.x", 0);
-                opp.set("location.y", 0);
-                opp.set("location.z", 0);
-            }
-
-
-            // Save changes
-            try {
-                File file = new File(new File(plugin.getDataFolder(), "playerdata"), uuid.toString() + ".yml");
-                config.save(file);
-            } catch (IOException e) {
-                plugin.debugLog("❌ Failed to save reserved opposite world section.");
-                e.printStackTrace();
-            }
-        }
-
-        // 🔁 Generate the paired portal
-        plugin.debugLog("Forcing generation of paired portal.");
-        plugin.getPortalManager().forceGeneratePairedPortal(linkCode, worldName, uuid, frame);
-
-        // 🧷 Final marker registration & completion
-        plugin.debugLog("Finalizing pair.");
-        finalizePair(player, linkCode);
-
-        /* 🟢 Feedback
-        player.sendMessage("§aYour portal has been registered!");
-        player.sendMessage("§7Link Code: §e" + linkCode);*/
-        if (player != null) {
-            player.sendMessage("§aYour portal has been registered!");
-            player.sendMessage("§7Link Code: §e" + linkCode);
-        }
-
-    }
 
     public void registerDispenserPortal(UUID uuid, String linkCode, PortalFrame frame, String worldName) {
         // 🧾 Load or create the player config
@@ -1727,221 +1717,6 @@ public class PortalManager {
         recentIgniteTimestamps.entrySet().removeIf(entry -> entry.getValue() < cutoff);
     }
 
-    public String findExistingPendingLinkCode(UUID uuid, String worldName, Location loc) {
-        YamlConfiguration config = getOrCreatePlayerConfig(uuid);
-
-        ConfigurationSection links = config.getConfigurationSection("links");
-        if (links == null) return null;
-
-        for (String code : links.getKeys(false)) {
-        	ConfigurationSection dest = config.getConfigurationSection("links." + code + "." + worldName);
-        	if (dest == null) continue;
-
-
-            ConfigurationSection locSec = dest.getConfigurationSection("location");
-            if (locSec == null) continue;
-
-            String w = locSec.getString("world");
-            double x = locSec.getDouble("x");
-            double y = locSec.getDouble("y");
-            double z = locSec.getDouble("z");
-
-            if (w.equalsIgnoreCase(worldName)
-                && Math.abs(x - loc.getBlockX()) < 1
-                && Math.abs(y - loc.getBlockY()) < 1
-                && Math.abs(z - loc.getBlockZ()) < 1) {
-                return code;
-            }
-        }
-
-        return null;
-    }
-
-    public void finalizePair(Player player, String linkCode) {
-    	UUID uuid = (player != null) ? player.getUniqueId() : SERVER_UUID;
-        YamlConfiguration config = getOrCreatePlayerConfig(uuid);
-        ConfigurationSection link = config.getConfigurationSection("links." + linkCode);
-        if (link == null) return;
-
-        Set<String> worldsWithLocation = new HashSet<>();
-        for (String key : link.getKeys(false)) {
-            if (key.equals("pendingPair")) continue;
-            ConfigurationSection worldSection = link.getConfigurationSection(key);
-            if (worldSection != null && worldSection.contains("location")) {
-                worldsWithLocation.add(key);
-            }
-        }
-
-        // ✅ If already finalized, skip
-        if (!link.getBoolean("pendingPair", true)) return;
-
-        // ✅ If both worlds are linked, finalize once and stop further pairing logic
-        if (worldsWithLocation.size() >= 2) {
-            link.set("pendingPair", false);
-            commitQueuedData(uuid);
-        }
-    }
-
-
-    private Location parseCoord(String raw, String worldName) {
-        World world = Bukkit.getWorld(worldName);
-        if (raw == null || world == null) return null;
-
-        String[] parts = raw.replace(" ", "").split(",");
-        if (parts.length != 3) return null;
-
-        try {
-            int x = Integer.parseInt(parts[0]);
-            int y = Integer.parseInt(parts[1]);
-            int z = Integer.parseInt(parts[2]);
-            return new Location(world, x, y, z);
-        } catch (NumberFormatException e) {
-            plugin.debugLog("⚠️ Failed to parse coordinate: " + raw);
-            return null;
-        }
-    }
-
-    public Location getPortalLocationByLinkCode(String linkCode, String worldName) {
-        File portalMapFile = new File(plugin.getDataFolder(), "portalMap.yml");
-        YamlConfiguration portalMap = YamlConfiguration.loadConfiguration(portalMapFile);
-
-        String uuidString = portalMap.getString(linkCode + ".owner");
-        if (uuidString == null) return null;
-
-        UUID uuid = UUID.fromString(uuidString);
-        File playerFile = new File(new File(plugin.getDataFolder(), "playerdata"), uuid + ".yml");
-        if (!playerFile.exists()) return null;
-
-        YamlConfiguration config = YamlConfiguration.loadConfiguration(playerFile);
-        ConfigurationSection section = config.getConfigurationSection("links." + linkCode + "." + worldName + ".location");
-        if (section == null) return null;
-
-        double x = section.getDouble("x");
-        double y = section.getDouble("y");
-        double z = section.getDouble("z");
-
-        World world = Bukkit.getWorld(worldName);
-        if (world == null) return null;
-
-        return new Location(world, x + 0.5, y, z + 0.5);
-    }
-
-
-    public boolean isPortalRegisteringSoon(Player player, Location destination) {
-        //UUID uuid = player.getUniqueId();
-    	UUID uuid = (player != null) ? player.getUniqueId() : SERVER_UUID;
-
-        File file = new File(dataFolder, uuid.toString() + ".yml");
-        if (!file.exists()) return false;
-
-        YamlConfiguration config = YamlConfiguration.loadConfiguration(file);
-        ConfigurationSection links = config.getConfigurationSection("links");
-        if (links == null) return false;
-
-        for (String code : links.getKeys(false)) {
-            ConfigurationSection section = links.getConfigurationSection(code);
-            if (section == null || !section.getBoolean("pendingPair", false)) continue;
-
-            ConfigurationSection worldSection = section.getConfigurationSection(destination.getWorld().getName());
-            if (worldSection == null || !worldSection.contains("location")) continue;
-
-            ConfigurationSection loc = worldSection.getConfigurationSection("location");
-            if (loc == null) continue;
-
-            double x = loc.getDouble("x");
-            double y = loc.getDouble("y");
-            double z = loc.getDouble("z");
-
-            if (destination.distance(new Location(destination.getWorld(), x, y, z)) < 3.5) {
-                return true; // close match
-            }
-        }
-
-        return false;
-    }
-
-    public String findAnyLinkCodeWithOneWorld(UUID uuid) {
-        YamlConfiguration config = getOrCreatePlayerConfig(uuid);
-        ConfigurationSection links = config.getConfigurationSection("links");
-        if (links == null) return null;
-
-        for (String code : links.getKeys(false)) {
-            ConfigurationSection section = links.getConfigurationSection(code);
-            if (section == null) continue;
-
-            int worldCount = 0;
-            for (String k : section.getKeys(false)) {
-                if (k.equalsIgnoreCase("frame") || k.equalsIgnoreCase("location")) continue;
-                worldCount++;
-            }
-            if (worldCount == 1) return code;
-        }
-
-        return null;
-    }
-
-    public void cleanupPortalMarkers() {
-        int totalRemoved = 0;
-        for (World world : Bukkit.getWorlds()) {
-            int removed = 0;
-            for (Entity entity : world.getEntitiesByClass(ArmorStand.class)) {
-                if (entity.getScoreboardTags().contains("gnp_marker")) {
-                    entity.remove();
-                    removed++;
-                }
-            }
-            if (removed > 0) {
-                plugin.debugLog("🧹 Removed " + removed + " portal markers from world: " + world.getName());
-                totalRemoved += removed;
-            }
-        }
-
-        if (totalRemoved == 0) {
-            plugin.debugLog("✅ No portal markers found to clean up.");
-        } else {
-            plugin.debugLog("✅ Total portal markers removed: " + totalRemoved);
-        }
-        spawnedMarkers.clear();
-    }
-
-    public void removeLink(String playerName, String worldName, boolean isReturn) {
-        UUID uuid = getUUIDFromName(playerName);
-        File file = new File(dataFolder, uuid + ".yml");
-        if (!file.exists()) return;
-
-        YamlConfiguration config = YamlConfiguration.loadConfiguration(file);
-        ConfigurationSection links = config.getConfigurationSection("links");
-        if (links == null) return;
-
-        for (String code : links.getKeys(false)) {
-            ConfigurationSection section = links.getConfigurationSection(code);
-            if (section != null && section.contains(worldName)) {
-                section.set(worldName, null);
-                plugin.debugLog("🧼 Removed portal link for " + playerName + " in world: " + worldName);
-                try {
-                    config.save(file);
-                } catch (Exception e) {
-                    e.printStackTrace();
-                }
-                return;
-            }
-        }
-    }
-
-    public String getPendingLinkCodeForWorld(UUID uuid, String worldName) {
-        YamlConfiguration config = getOrCreatePlayerConfig(uuid);
-        ConfigurationSection links = config.getConfigurationSection("links");
-        if (links == null) return null;
-
-        for (String code : links.getKeys(false)) {
-            ConfigurationSection sec = links.getConfigurationSection(code);
-            if (sec == null) continue;
-            if (sec.getBoolean("pendingPair", false) && !sec.contains(worldName)) {
-                return code;
-            }
-        }
-        return null;
-    }
 
     public boolean isPortalNearby(Location loc, int radius) {
         World world = loc.getWorld();
@@ -1960,671 +1735,8 @@ public class PortalManager {
         return false;
     }
 
-    public String getLinkCodeFromBlock(Location loc) {
-        if (loc == null || loc.getBlock() == null) return null;
-
-        Block block = loc.getBlock();
-        if (!block.getType().name().contains("PORTAL")) return null;
-
-        PersistentDataContainer container = new CustomBlockData(block, plugin);
-        if (container.has(key("linkCode"), PersistentDataType.STRING)) {
-            return container.get(key("linkCode"), PersistentDataType.STRING);
-        }
-
-        return null;
-    }
-
     private NamespacedKey key(String path) {
         return new NamespacedKey(plugin, path);
-    }
-
-    
-    public void forceCreatePortal(Location center, String linkCode, UUID ownerUUID) {
-        World world = center.getWorld();
-        if (world == null) return;
-
-        // Create basic obsidian frame only
-        Location corner = findBottomLeftCorner(center);
-        if (corner == null) corner = center.clone();
-
-        String worldName = center.getWorld().getName();
-        YamlConfiguration config = getOrCreatePlayerConfig(ownerUUID);
-
-        ConfigurationSection frameSec = config.getConfigurationSection("links." + linkCode + "." + worldName + ".frame");
-        String orientation = frameSec != null ? frameSec.getString("orientation", "X") : "X";
-        int width = frameSec != null ? frameSec.getInt("width", 2) : 2;
-        int height = frameSec != null ? frameSec.getInt("height", 3) : 3;
-
-        // 🔨 Build frame
-        int dx = orientation.equalsIgnoreCase("X") ? 1 : 0;
-        int dz = orientation.equalsIgnoreCase("X") ? 0 : 1;
-        //World world = corner.getWorld();
-
-        for (int x = 0; x < width + 2; x++) {
-            for (int y = 0; y < height + 2; y++) {
-                Location blockLoc = corner.clone().add(dx * x, y, dz * x);
-                boolean isEdge = (x == 0 || x == width + 1 || y == 0 || y == height + 1);
-                blockLoc.getBlock().setType(isEdge ? Material.OBSIDIAN : Material.AIR);
-            }
-        }
-
-        // 🔥 Trigger portal
-        tryTriggerNaturalPortal(corner.clone().add(dx + 1, 1, dz + 1));
-
-
-        // Let Minecraft naturally ignite the portal
-        tryTriggerNaturalPortal(center);
-
-        plugin.debugLog("✅ Built frame and triggered portal at " + center);
-
-        // Let marker and tag logic proceed
-        tryRegisterArrivalPortal(center, linkCode, ownerUUID);
-    }
-
-
-    public Location findSafeNearbyLocation(Location origin, int initialRadius) {
-        World world = origin.getWorld();
-        if (world == null) return null;
-
-        File globalFile = new File(plugin.getDataFolder(), "portalMap.yml");
-        YamlConfiguration globalConfig = YamlConfiguration.loadConfiguration(globalFile);
-        ConfigurationSection portalMap = globalConfig.getConfigurationSection("");
-
-        int maxRadius = initialRadius * 2;
-        for (int radius = initialRadius; radius <= maxRadius; radius += 2) {
-            for (int dx = -radius; dx <= radius; dx++) {
-                for (int dz = -radius; dz <= radius; dz++) {
-                    // Only scan perimeter of current radius "ring"
-                    if (Math.abs(dx) != radius && Math.abs(dz) != radius) continue;
-
-                    Location test = origin.clone().add(dx, 0, dz);
-                    if (isPortalNearby(test, 5)) continue;
-
-                    boolean tooClose = false;
-
-                    if (portalMap != null) {
-                        for (String code : portalMap.getKeys(false)) {
-                            ConfigurationSection entry = portalMap.getConfigurationSection(code);
-                            if (entry == null) continue;
-
-                            ConfigurationSection perWorld = entry.getConfigurationSection(world.getName());
-                            if (perWorld == null) continue;
-
-                            double x = perWorld.getDouble("location.x");
-                            double y = perWorld.getDouble("location.y");
-                            double z = perWorld.getDouble("location.z");
-
-                            Location existing = new Location(world, x, y, z);
-                            if (existing.distance(test) < 10) {
-                                tooClose = true;
-                                break;
-                            }
-                        }
-                    }
-
-                    if (!tooClose) {
-                        plugin.debugLog("✅ Found safe portal location at " + test);
-                        return test;
-                    }
-                }
-            }
-        }
-
-        plugin.debugLog("⚠ No safe location found after searching up to radius " + maxRadius);
-        return null;
-    }
-
-    
-    public Location calculateMarkerPosition(Location bottomLeft) {
-        if (bottomLeft == null) return null;
-        World world = bottomLeft.getWorld();
-        if (world == null) return null;
-
-        int x = bottomLeft.getBlockX();
-        int y = bottomLeft.getBlockY();
-        int z = bottomLeft.getBlockZ();
-
-        // Check if it's a horizontal portal (X-axis)
-        boolean facingX = world.getBlockAt(x + 1, y + 1, z).getType() == Material.NETHER_PORTAL;
-
-        double markerX = x + (facingX ? 1.5 : 0.5);
-        double markerZ = z + (facingX ? 0.5 : 1.5);
-        double markerY = y + 1.0;
-
-        return new Location(world, markerX, markerY, markerZ);
-    }
-
-
-    public void buildBasicPortalFrame(Location bottomLeft) {
-        if (bottomLeft == null) return;
-
-        World world = bottomLeft.getWorld();
-        if (world == null) return;
-
-        int x = bottomLeft.getBlockX();
-        int y = bottomLeft.getBlockY();
-        int z = bottomLeft.getBlockZ();
-
-        // 🟪 Create a simple vertical frame: 4 tall, 3 wide
-        for (int dx = 0; dx < 3; dx++) {
-            for (int dy = 0; dy < 4; dy++) {
-                Block block = world.getBlockAt(x + dx, y + dy, z);
-                if (dx == 0 || dx == 2 || dy == 0 || dy == 3) {
-                    block.setType(Material.OBSIDIAN);
-                } else {
-                    block.setType(Material.NETHER_PORTAL);
-                }
-            }
-        }
-    }
-
-    private NamespacedKey namespacedKey(String key) {
-        return new NamespacedKey(plugin, key);
-    }
-
-    public void cleanupNearbyMarkers(Location center, String linkCode) {
-        PortalFrame frame = scanFullPortalFrame(center);
-        if (frame == null) {
-            plugin.debugLog("❌ [CLEANUP] Could not scan frame at " + formatLoc(center));
-            return;
-        }
-
-        BoundingBox box = BoundingBox.of(frame.bottomLeft, frame.topRight).expand(0.5);
-        Collection<Entity> entities = center.getWorld().getNearbyEntities(box);
-
-        for (Entity entity : entities) {
-            if (!(entity instanceof ArmorStand stand)) continue;
-            if (!stand.getScoreboardTags().contains("gnp_marker")) continue;
-
-            String existing = stand.getPersistentDataContainer().get(
-                new NamespacedKey(plugin, "linkCode"),
-                PersistentDataType.STRING
-            );
-
-            if (linkCode.equals(existing)) {
-                stand.remove();
-                plugin.debugLog("🧹 [CLEANUP] Removed marker for linkCode: " + linkCode + " inside portal frame.");
-            }
-        }
-    }
-
-
-    
-    public Location getPendingPortalLocation(String linkCode, String worldName, UUID ownerUUID) {
-        if (ownerUUID == null) return null;
-
-        File file = new File(new File(plugin.getDataFolder(), "playerdata"), ownerUUID.toString() + ".yml");
-        if (!file.exists()) return null;
-
-        YamlConfiguration config = YamlConfiguration.loadConfiguration(file);
-        ConfigurationSection frameCorner = config.getConfigurationSection("links." + linkCode + "." + worldName + ".frame.corner");
-        if (frameCorner == null) return null;
-
-        String raw = frameCorner.getString("Bottom-Left");
-        if (raw == null || raw.trim().equals("0, 0, 0")) {
-            plugin.debugLog("❌ [getPendingPortalLocation] Bottom-Left is invalid or missing for " + linkCode + " in world: " + worldName);
-            return null;
-        }
-
-        return parseCoord(raw, worldName);
-    }
-
-    public UUID getPlayerUUIDFromLinkCode(String linkCode) {
-        File playerDataFolder = new File(plugin.getDataFolder(), "playerdata");
-        if (!playerDataFolder.exists()) return null;
-
-        for (File file : playerDataFolder.listFiles()) {
-            if (!file.getName().endsWith(".yml")) continue;
-
-            YamlConfiguration config = YamlConfiguration.loadConfiguration(file);
-            ConfigurationSection links = config.getConfigurationSection("links");
-            if (links != null && links.contains(linkCode)) {
-                String uuidString = file.getName().replace(".yml", "");
-                try {
-                    return UUID.fromString(uuidString);
-                } catch (IllegalArgumentException e) {
-                    //plugin.getLogger().warning("Invalid UUID in filename: " + uuidString);
-                }
-            }
-        }
-
-        return null;
-    }
-
-    public boolean isMarkerFresh(String linkCode, Location pos) {
-        for (Entity entity : pos.getWorld().getNearbyEntities(pos, 1, 1, 1)) {
-            if (entity instanceof ArmorStand stand) {
-                if (!stand.getScoreboardTags().contains("gnp_marker")) continue;
-
-                String code = stand.getPersistentDataContainer().get(
-                    new NamespacedKey(plugin, "linkCode"),
-                    PersistentDataType.STRING
-                );
-
-                if (code != null && code.equalsIgnoreCase(linkCode)) {
-                    String status = stand.getPersistentDataContainer().get(
-                        new NamespacedKey(plugin, "status"),
-                        PersistentDataType.STRING
-                    );
-                    return "FRESH".equalsIgnoreCase(status);
-                }
-            }
-        }
-        return false;
-    }
-
-    public void markAllMarkersWithLinkCode(String linkCode) {
-        for (World world : Bukkit.getWorlds()) {
-            for (Entity entity : world.getEntitiesByClass(ArmorStand.class)) {
-                if (!(entity instanceof ArmorStand stand)) continue;
-                if (!stand.getScoreboardTags().contains("gnp_marker")) continue;
-
-                PersistentDataContainer data = stand.getPersistentDataContainer();
-                String code = data.get(new NamespacedKey(plugin, "linkCode"), PersistentDataType.STRING);
-                if (!linkCode.equalsIgnoreCase(code)) continue;
-
-                NamespacedKey statusKey = new NamespacedKey(plugin, "status");
-                String current = data.getOrDefault(statusKey, PersistentDataType.STRING, "FRESH");
-
-                if ("FRESH".equalsIgnoreCase(current)) {
-                    data.set(statusKey, PersistentDataType.STRING, "NORMAL");
-                    plugin.debugLog("✅ Marker with linkCode " + linkCode + " updated to NORMAL at " + stand.getLocation());
-                }
-            }
-        }
-    }
-
-    public void forceGeneratePairedPortal(String linkCode, String originWorld, UUID uuid, PortalFrame sourceFrame) {
-        plugin.debugLog("forceGeneratePairedPortal called.");
-        String destinationWorld = plugin.getOppositeWorld(originWorld);
-        if (destinationWorld == null) {
-            plugin.debugLog("Destination world is null, returning.");
-            return;
-        }
-        plugin.debugLog("Destination world: " + destinationWorld);
-
-        YamlConfiguration config = getOrCreatePlayerConfig(uuid);
-        ConfigurationSection linkSection = config.getConfigurationSection("links." + linkCode);
-        if (linkSection == null) {
-            plugin.debugLog("Link section is null, returning.");
-            return;
-        }
-
-        ConfigurationSection sourceData = linkSection.getConfigurationSection(originWorld);
-        if (sourceData == null) {
-            plugin.debugLog("Source data is null, returning.");
-            return;
-        }
-
-        Location sourceCorner = sourceFrame.bottomLeft.clone();
-        Location rawCorner = sourceCorner.clone();
-
-        // Ensure destination world exists/loaded
-        org.bukkit.World destW = Bukkit.getWorld(destinationWorld);
-        if (destW == null) {
-            plugin.debugLog("[GNP] Destination world not loaded: " + destinationWorld);
-            return; // if you added requestPairedPortalBuild, it should create/load or defer
-        }
-        rawCorner.setWorld(destW);
-
-        // Scale coords BEFORE creating destCorner
-        double scaledX = rawCorner.getX();
-        double scaledZ = rawCorner.getZ();
-        if (originWorld.endsWith("_nether") && !destinationWorld.endsWith("_nether")) {
-            scaledX *= 8; scaledZ *= 8;
-        } else if (!originWorld.endsWith("_nether") && destinationWorld.endsWith("_nether")) {
-            scaledX /= 8; scaledZ /= 8;
-        }
-        plugin.debugLog("Scaled coordinates: " + scaledX + ", " + scaledZ);
-
-        // Anchor for build
-        Location destCorner = new Location(destW, Math.floor(scaledX), rawCorner.getBlockY(), Math.floor(scaledZ));
-        plugin.debugLog("Destination corner: " + destCorner);
-
-        // Load the actual destination chunk NOW (after destCorner is known)
-        org.bukkit.Chunk destChunk = destCorner.getChunk();
-        if (!destChunk.isLoaded()) destChunk.load();
-
-        int portalHeight = sourceFrame.topLeft.getBlockY() - sourceFrame.bottomLeft.getBlockY() + 1;
-        Location safeDest = findSafeValidPortalLocation(destCorner, 8, 16, portalHeight);
-        if (safeDest == null) {
-            plugin.debugLog("❌ No safe destination found near: " + formatLoc(destCorner));
-            return;
-        }
-        destCorner = safeDest;
-        plugin.debugLog("Safe destination found: " + destCorner);
-
-        // Bedrock guard
-        for (int dx = -1; dx <= 1; dx++) {
-            for (int dy = -1; dy <= 2; dy++) {
-                for (int dz = -1; dz <= 1; dz++) {
-                    Block nearby = destCorner.clone().add(dx, dy, dz).getBlock();
-                    if (nearby.getType() == Material.BEDROCK) {
-                        plugin.debugLog("❌ Portal generation cancelled — would touch bedrock at: " + formatLoc(destCorner));
-                        return;
-                    }
-                }
-            }
-        }
-
-        // Avoid stacking on existing portals
-        if (isPortalNearby(destCorner, 10)) {
-            Location fallback = findSafeNearbyLocation(destCorner, 10);
-            if (fallback != null) {
-                destCorner = fallback;
-                plugin.debugLog("Found nearby portal, using fallback location: " + destCorner);
-            } else {
-                plugin.debugLog("Found nearby portal, but no fallback location found. Returning.");
-                return;
-            }
-        }
-
-        // Clamp extreme Y (safety)
-        if (destCorner.getBlockY() > 250 || destCorner.getBlockY() < 5) {
-            destCorner.setY(64);
-            plugin.debugLog("Clamped Y to 64.");
-        }
-
-        // === REPLACE (BEGIN) — Lines 2351–2365
-        // Marker status gates — do NOT return; only decide whether to skip the frame copy.
-        // We always proceed to scan + register B in the delayed block.
-        boolean skipBuild = false;
-        String markerStatus = getMarkerStatus(linkCode, destinationWorld);
-        plugin.debugLog("Marker status: " + markerStatus);
-        if ("NORMAL".equalsIgnoreCase(markerStatus)) skipBuild = true;
-
-        int width = sourceFrame.orientation.equalsIgnoreCase("X")
-            ? sourceFrame.bottomRight.getBlockX() - sourceFrame.bottomLeft.getBlockX() + 1
-            : sourceFrame.bottomRight.getBlockZ() - sourceFrame.bottomLeft.getBlockZ() + 1;
-        int height = sourceFrame.topLeft.getBlockY() - sourceFrame.bottomLeft.getBlockY() + 1;
-
-        if ("FRESH".equalsIgnoreCase(markerStatus)) {
-            if (!portalBlocksMissing(destCorner, width, height, sourceFrame.orientation)) {
-                skipBuild = true;
-                plugin.debugLog("Marker is fresh and portal blocks are not missing, skipping build.");
-            }
-        }
-        if (areBothMarkersPresent(linkCode, originWorld, destinationWorld)) {
-            if (!portalBlocksMissing(destCorner, width, height, sourceFrame.orientation)) {
-                skipBuild = true;
-                plugin.debugLog("Both markers are present and portal blocks are not missing, skipping build.");
-            }
-        }
-        // === REPLACE (END) — Lines 2351–2365
-
-        // === REPLACE — Line 2367
-        if (!skipBuild) {
-            plugin.debugLog("Copying portal frame.");
-            copyPortalFrameFromTo(sourceFrame.bottomLeft, destCorner, width, height, sourceFrame.orientation);
-        } else {
-            plugin.debugLog("Skipping portal frame copy.");
-        }
-        // === REPLACE (END) — Line 2367
-
-        // Find a portal block to start scan from (if interior already lit elsewhere)
-        if (destCorner.getBlock().getType() != Material.NETHER_PORTAL) {
-            Location nearby = findNearbyPortalBlock(destCorner);
-            if (nearby != null) {
-                destCorner = nearby;
-                plugin.debugLog("Found nearby portal block, updating destCorner: " + destCorner);
-            }
-        }
-
-        // REPLACEMENT — use tight search around intended destination
-        Location portalScanBase = findNearbyPortalBlock(destCorner, /*radius*/ 3);
-        if (portalScanBase == null) portalScanBase = destCorner.clone();
-        plugin.debugLog("Portal scan base: " + portalScanBase);
-
-        portalScanBase.setWorld(destW);
-        final Location finalScanStart = portalScanBase;
-
-        final World portalWorld = destCorner.getWorld();
-
-        // === INSERT finals (captures for inner class) — Line ~2391
-        final org.bukkit.Location destCornerFinal = destCorner.clone();
-        final org.bukkit.Location finalScanStartFinal = finalScanStart.clone();
-        final java.util.UUID uuidFinal = uuid;
-        final java.lang.String linkCodeFinal = linkCode;
-        final java.lang.String destinationWorldFinal = destinationWorld;
-        // === INSERT finals (END) — Line ~2391
-
-        // Delay a couple ticks: let physics light the portal, then scan + persist
-        // === REPLACE timer block — Lines ~2393–2454
-        new org.bukkit.scheduler.BukkitRunnable() {
-            int attempts = 0; // up to ~2 seconds @ 2 ticks per attempt
-            @Override public void run() {
-                plugin.debugLog("Delayed task running, attempt: " + attempts);
-                attempts++;
-
-                // keep looking for the portal blocks that just formed
-                org.bukkit.Location scanStart = findNearbyPortalBlock(destCornerFinal, /*radius*/ 3);
-                if (scanStart == null) scanStart = finalScanStartFinal;
-
-                java.util.Set<org.bukkit.Location> visited = new java.util.HashSet<>();
-                PortalFrame newFrame = scanFullPortalFrame(scanStart, visited, false, false);
-                if (newFrame == null) {
-                    if (attempts >= 40) {
-                        plugin.debugLog("⚠️ [PAIR] Portal-B scan failed after " + attempts + " attempts at " + destCornerFinal);
-                        this.cancel();
-                    }
-                    return;
-                }
-                plugin.debugLog("New frame scanned successfully.");
-
-                // HARD GUARD — ensure we didn't snap to a distant, older portal
-                double d2 = newFrame.bottomLeft.distanceSquared(destCornerFinal);
-                if (d2 > 25.0) { // > 5 blocks from intended B corner? keep trying.
-                    if (attempts >= 40) {
-                        plugin.debugLog("⚠️ [PAIR] Found portal too far from target (" + Math.sqrt(d2) + " blocks). Giving up at " + destCornerFinal);
-                        this.cancel();
-                    }
-                    return;
-                }
-
-                // Marker + YAML + detection for B-side
-                spawnPortalMarker(newFrame, linkCodeFinal, uuidFinal);
-
-                org.bukkit.configuration.file.YamlConfiguration delayedConfig = getOrCreatePlayerConfig(uuidFinal);
-                org.bukkit.configuration.ConfigurationSection destSection =
-                        delayedConfig.getConfigurationSection("links." + linkCodeFinal + "." + destinationWorldFinal);
-                if (destSection == null) destSection =
-                        delayedConfig.createSection("links." + linkCodeFinal + "." + destinationWorldFinal);
-
-                org.bukkit.Location destLoc = newFrame.bottomLeft;
-
-                org.bukkit.configuration.ConfigurationSection locSection = destSection.createSection("location");
-                locSection.set("world", destLoc.getWorld().getName());
-                locSection.set("x", destLoc.getX());
-                locSection.set("y", destLoc.getY());
-                locSection.set("z", destLoc.getZ());
-                locSection.set("yaw", destLoc.getYaw());
-                locSection.set("pitch", destLoc.getPitch());
-
-                org.bukkit.configuration.ConfigurationSection frameSection = destSection.createSection("frame");
-                frameSection.set("orientation", newFrame.orientation);
-                org.bukkit.configuration.ConfigurationSection cornerSection = frameSection.createSection("corner");
-                cornerSection.set("Bottom-Left", formatCoord(newFrame.bottomLeft));
-                cornerSection.set("Bottom-Right", formatCoord(newFrame.bottomRight));
-                cornerSection.set("Top-Left", formatCoord(newFrame.topLeft));
-                cornerSection.set("Top-Right", formatCoord(newFrame.topRight));
-
-                if (!newFrame.portalBlocks.isEmpty()) {
-                    int minX = Integer.MAX_VALUE, minY = Integer.MAX_VALUE, minZ = Integer.MAX_VALUE;
-                    int maxX = Integer.MIN_VALUE, maxY = Integer.MIN_VALUE, maxZ = Integer.MIN_VALUE;
-                    for (org.bukkit.block.Block b : newFrame.portalBlocks) {
-                        org.bukkit.Location l = b.getLocation();
-                        minX = Math.min(minX, l.getBlockX());
-                        minY = Math.min(minY, l.getBlockY());
-                        minZ = Math.min(minZ, l.getBlockZ());
-                        maxX = Math.max(maxX, l.getBlockX());
-                        maxY = Math.max(maxY, l.getBlockY());
-                        maxZ = Math.max(maxZ, l.getBlockZ());
-                    }
-
-                    org.bukkit.Location min = new org.bukkit.Location(destLoc.getWorld(), minX, minY, minZ);
-                    org.bukkit.Location max = new org.bukkit.Location(destLoc.getWorld(), maxX, maxY, maxZ);
-
-                    int expandX = 0, expandZ = 0;
-                    if ("X".equalsIgnoreCase(newFrame.orientation)) expandZ = 1; else expandX = 1;
-
-                    org.bukkit.Location expandedMin = min.clone().subtract(expandX, 0, expandZ);
-                    org.bukkit.Location expandedMax = max.clone().add(expandX, 0, expandZ);
-
-                    // in-memory + persist
-                    detectionRegions.add(new DetectionRegion(expandedMin, expandedMax, linkCodeFinal));
-
-                    org.bukkit.configuration.ConfigurationSection interiorSection = destSection.getConfigurationSection("interior");
-                    if (interiorSection == null) interiorSection = destSection.createSection("interior");
-                    interiorSection.set("min", formatCoord(expandedMin));
-                    interiorSection.set("max", formatCoord(expandedMax));
-                }
-
-                try {
-                    java.io.File file = new java.io.File(new java.io.File(plugin.getDataFolder(), "playerdata"), uuidFinal.toString() + ".yml");
-                    delayedConfig.save(file);
-                } catch (java.io.IOException e) {
-                    plugin.debugLog("❌ [PAIR] Failed to save portal config for: " + uuidFinal);
-                    e.printStackTrace();
-                }
-
-                // keep other indices in sync and finalize
-                addPortalToGlobalMap(linkCodeFinal, uuidFinal);
-
-                org.bukkit.configuration.ConfigurationSection linkRoot =
-                        delayedConfig.getConfigurationSection("links." + linkCodeFinal);
-                if (linkRoot != null) {
-                    linkRoot.set("pendingPair", false);
-                    try {
-                        java.io.File file = new java.io.File(new java.io.File(plugin.getDataFolder(), "playerdata"), uuidFinal.toString() + ".yml");
-                        delayedConfig.save(file);
-                    } catch (java.io.IOException ignored) {}
-                }
-
-                clearPendingLink(uuidFinal);
-                plugin.debugLog("✅ [PAIR] Portal-B registered for " + linkCodeFinal + " at " + destLoc);
-                this.cancel();
-            }
-        }.runTaskTimer(plugin, 2L, 2L);
-        // === REPLACE timer block (END) — Lines ~2393–2454
-    }
-
-
-    public Location findSafeValidPortalLocation(Location base, int maxHorizontal, int maxVertical, int portalHeight) {
-        World world = base.getWorld();
-        int startX = base.getBlockX();
-        int startY = base.getBlockY();
-        int startZ = base.getBlockZ();
-
-        String worldName = world.getName().toLowerCase();
-        int minY = 6;
-        int maxY = worldName.contains("nether") ? 120 : 255;
-
-        int correctedY = startY;
-        if (correctedY < minY) {
-            correctedY = minY;
-            plugin.debugLog("🔼 Adjusted portal Y upward to minY: " + correctedY);
-        } else if ((correctedY + portalHeight + 1) > maxY) {
-            correctedY = maxY - portalHeight - 1;
-            plugin.debugLog("🔽 Adjusted portal Y downward to fit below ceiling: " + correctedY);
-        }
-
-        Location clamped = new Location(world, startX, correctedY, startZ);
-        plugin.debugLog("✅ Using corrected destination location: " + formatLoc(clamped));
-
-        int attempts = 0;
-        int offsetStep = 4;
-        int maxAttempts = 5;
-
-        while (attempts < maxAttempts) {
-            Location bl = clamped;
-            Location br = bl.clone().add(3, 0, 0);
-            Location tl = bl.clone().add(0, portalHeight - 1, 0);
-            Location tr = br.clone().add(0, portalHeight - 1, 0);
-
-            int minX = Math.min(Math.min(bl.getBlockX(), br.getBlockX()), Math.min(tl.getBlockX(), tr.getBlockX()));
-            int maxX = Math.max(Math.max(bl.getBlockX(), br.getBlockX()), Math.max(tl.getBlockX(), tr.getBlockX()));
-            int minYFrame = Math.min(Math.min(bl.getBlockY(), br.getBlockY()), Math.min(tl.getBlockY(), tr.getBlockY()));
-            int maxYFrame = Math.max(Math.max(bl.getBlockY(), br.getBlockY()), Math.max(tl.getBlockY(), tr.getBlockY()));
-            int minZ = Math.min(Math.min(bl.getBlockZ(), br.getBlockZ()), Math.min(tl.getBlockZ(), tr.getBlockZ()));
-            int maxZ = Math.max(Math.max(bl.getBlockZ(), br.getBlockZ()), Math.max(tl.getBlockZ(), tr.getBlockZ()));
-
-            boolean foundOverlap = false;
-            for (Entity entity : world.getNearbyEntities(new Location(world, minX, minYFrame, minZ),
-                                                         maxX - minX + 1, maxYFrame - minYFrame + 1, maxZ - minZ + 1)) {
-                if (!(entity instanceof ArmorStand stand)) continue;
-                if (!stand.getScoreboardTags().contains("gnp_marker")) continue;
-
-                String linkCode = stand.getPersistentDataContainer().get(
-                    new NamespacedKey(plugin, "linkCode"), PersistentDataType.STRING);
-                String ownerString = stand.getPersistentDataContainer().get(
-                    new NamespacedKey(plugin, "owner"), PersistentDataType.STRING);
-
-                if (linkCode == null || ownerString == null) continue;
-
-                try {
-                    UUID owner = UUID.fromString(ownerString);
-                    YamlConfiguration config = plugin.getPortalManager().getOrCreatePlayerConfig(owner);
-                    ConfigurationSection cornerSec = config.getConfigurationSection("links." + linkCode + "." + world.getName() + ".frame.corner");
-                    if (cornerSec == null) continue;
-
-                    String[] blData = cornerSec.getString("Bottom-Left").split(", ");
-                    String[] trData = cornerSec.getString("Top-Right").split(", ");
-
-                    int bx1 = Integer.parseInt(blData[0]);
-                    int by1 = Integer.parseInt(blData[1]);
-                    int bz1 = Integer.parseInt(blData[2]);
-                    int bx2 = Integer.parseInt(trData[0]);
-                    int by2 = Integer.parseInt(trData[1]);
-                    int bz2 = Integer.parseInt(trData[2]);
-
-                    boolean overlap = bx2 >= minX && bx1 <= maxX &&
-                                      by2 >= minYFrame && by1 <= maxYFrame &&
-                                      bz2 >= minZ && bz1 <= maxZ;
-
-                    if (overlap) {
-                        plugin.debugLog("❌ Overlap detected with portal link " + linkCode + " at: " + formatLoc(stand.getLocation()));
-                        foundOverlap = true;
-                        break;
-                    }
-
-                } catch (Exception ex) {
-                    plugin.debugLog("⚠️ Failed to process marker data for link " + linkCode);
-                }
-            }
-
-            if (!foundOverlap) {
-                plugin.debugLog("✅ Destination frame volume is clear at: " + formatLoc(clamped));
-                return clamped;
-            }
-
-            clamped.add(offsetStep, 0, offsetStep);
-            plugin.debugLog("↪ Retrying new destination offset to: " + formatLoc(clamped));
-            attempts++;
-        }
-
-        plugin.debugLog("⚠ Gave up after " + maxAttempts + " attempts to avoid portal collision.");
-        return clamped;
-    }
-
-
-
-    public boolean isObsidianNearby(Location base) {
-        World world = base.getWorld();
-        if (world == null) return false;
-
-        for (int dx = -1; dx <= 1; dx++) {
-            for (int dy = -1; dy <= 1; dy++) {
-                for (int dz = -1; dz <= 1; dz++) {
-                    Block b = base.clone().add(dx, dy, dz).getBlock();
-                    if (b.getType() == Material.OBSIDIAN) return true;
-                }
-            }
-        }
-        return false;
-    }
-
-    private boolean isFrameMaterial(Material mat) {
-        return mat == Material.OBSIDIAN || mat == Material.DIAMOND_BLOCK;
     }
 
     public PortalFrame scanFullPortalFrame(Location origin) {
@@ -2634,6 +1746,10 @@ public class PortalManager {
     }
     public PortalFrame scanFullPortalFrame(Location origin, Set<Location> visited, boolean suppressDuplicate) {
         return scanFullPortalFrame(origin, visited, suppressDuplicate, false);
+    }
+
+    public String getLinkCodeFromBlock(Location loc) {
+        return findLinkCodeAt(loc);
     }
 
     public PortalFrame scanFullPortalFrame(Location origin, Set<Location> visited, boolean suppressDuplicate, boolean isFromDispenser) {
@@ -2802,7 +1918,7 @@ public class PortalManager {
             return null;
         }
         return new PortalFrame(width + 2, height + 2, axis.name(),
-        	    bottomLeft, bottomRight, topLeft, topRight, portalBlocks);
+		    bottomLeft, bottomRight, topLeft, topRight, portalBlocks, diamonds);
 
     }
 
@@ -2863,6 +1979,10 @@ public class PortalManager {
         if (!block.getChunk().isLoaded()) return false;
         Material type = block.getType();
         return type == Material.AIR || type == Material.NETHER_PORTAL;
+    }
+
+    private boolean isFrameMaterial(Material material) {
+        return material == Material.OBSIDIAN || material == Material.DIAMOND_BLOCK;
     }
 
     private boolean hasAdjacentFrameBlock(Block block) {
@@ -3589,6 +2709,14 @@ public class PortalManager {
     }
 
 
+    public Location getPortalLocationByLinkCode(String linkCode, String worldName) {
+        Portal portal = loadPortal(linkCode, worldName);
+        if (portal != null) {
+            return portal.getLocation();
+        }
+        return null;
+    }
+
     public void forcePlayerToCorrectPortal(Player player, String linkCode, String worldName) {
         Location expected = getPortalLocationByLinkCode(linkCode, worldName);
         if (expected == null) {
@@ -3709,6 +2837,14 @@ public class PortalManager {
         return detectionRegions;
     }
 
+    public Location parseCoord(String coordString, String worldName) {
+        Location loc = parseCoord(coordString);
+        if (loc != null) {
+            loc.setWorld(Bukkit.getWorld(worldName));
+        }
+        return loc;
+    }
+
     public void loadAllInteriorRegionsFromFiles() {
         detectionRegions.clear(); // reset before reload
 
@@ -3744,11 +2880,6 @@ public class PortalManager {
         }
     }
     
-    public void clearQueuedPlayerConfigs() {
-        queuedPlayerConfigs.clear();
-        plugin.debugLog("🧹 Cleared all queued player configs from memory.");
-    }
-
     public void reloadPortalMap() {
         File file = new File(plugin.getDataFolder(), "portalMap.yml");
         if (!file.exists()) {
@@ -3847,7 +2978,7 @@ public class PortalManager {
         plugin.debugLog("[FRAME-DEBUG] Final frame: " + width + "x" + height + " (" + orientation + ")");
         plugin.debugLog("[FRAME-DEBUG] Frame BL location: " + bottomLeft);
 
-        return new PortalFrame(width, height, orientation, bottomLeft, bottomRight, topLeft, topRight, new ArrayList<>());
+        return new PortalFrame(width, height, orientation, bottomLeft, bottomRight, topLeft, topRight, new ArrayList<Block>(), 0);
     }
 
     private Location parseLocationString(World world, String raw) {
@@ -3912,34 +3043,241 @@ public class PortalManager {
 
     public Location getLinkBlockLocation(UUID owner, String worldName) {
         YamlConfiguration config = getOrCreatePlayerConfig(owner);
-        ConfigurationSection links = config.getConfigurationSection("links");
-        if (links == null) return null;
+        String portalsPath = "portals";
+        if (!config.contains(portalsPath)) return null;
 
-        List<Location> linkBlockPortals = new ArrayList<>();
-        for (String code : links.getKeys(false)) {
-            ConfigurationSection linkSection = links.getConfigurationSection(code);
-            if (linkSection == null) continue;
+        ConfigurationSection portalsSection = config.getConfigurationSection(portalsPath);
+        List<String> linkBlockPortalCodes = new ArrayList<>();
 
-            if (linkSection.getBoolean("diamondoverride", false)) {
-                ConfigurationSection worldSection = linkSection.getConfigurationSection(worldName);
-                if (worldSection != null) {
-                    Location loc = loadUniversalLocation(worldSection.getConfigurationSection("location"), Bukkit.getWorld(worldName));
-                    if (loc != null) {
-                        linkBlockPortals.add(loc);
-                    }
-                }
+        for (String linkCode : portalsSection.getKeys(false)) {
+            String worldPath = portalsPath + "." + linkCode + ".worlds." + worldName;
+            if (config.getBoolean(worldPath + ".diamondOverride", false)) {
+                linkBlockPortalCodes.add(linkCode);
             }
         }
 
-        if (linkBlockPortals.isEmpty()) {
+        if (linkBlockPortalCodes.isEmpty()) {
             return null;
         }
 
-        if (linkBlockPortals.size() == 1) {
-            return linkBlockPortals.get(0);
+        String chosenLinkCode;
+        if (linkBlockPortalCodes.size() == 1) {
+            chosenLinkCode = linkBlockPortalCodes.get(0);
+        } else {
+            chosenLinkCode = linkBlockPortalCodes.get(plugin.getRandom().nextInt(linkBlockPortalCodes.size()));
         }
 
-        return linkBlockPortals.get(plugin.getRandom().nextInt(linkBlockPortals.size()));
+        Portal portal = loadPortal(chosenLinkCode, worldName);
+        if (portal != null && portal.getFrame() != null) {
+             return getSafeTeleportLocation(portal.getFrame().bottomLeft, portal.getFrame().width, portal.getFrame().height, portal.getFrame().orientation);
+        } else if (portal != null) {
+            return portal.getLocation().clone().add(0.5, 1, 0.5); // Fallback
+        }
+
+        return null;
+    }
+
+    public void linkPortals(String linkCode1, String linkCode2, CommandSender sender) {
+        UUID owner1UUID = getPortalOwner(linkCode1);
+        UUID owner2UUID = getPortalOwner(linkCode2);
+
+        if (owner1UUID == null) {
+            sender.sendMessage("§cLink code '" + linkCode1 + "' not found.");
+            return;
+        }
+        if (owner2UUID == null) {
+            sender.sendMessage("§cLink code '" + linkCode2 + "' not found.");
+            return;
+        }
+
+        if (!owner1UUID.equals(owner2UUID)) {
+            sender.sendMessage("§cPortals must have the same owner to be linked.");
+            return;
+        }
+
+        File playerFile = new File(dataFolder, owner1UUID.toString() + ".yml");
+        if (!playerFile.exists()) {
+            sender.sendMessage("§cPlayer data file not found for owner.");
+            return;
+        }
+        YamlConfiguration config = YamlConfiguration.loadConfiguration(playerFile);
+
+        String path1 = "portals." + linkCode1;
+        String path2 = "portals." + linkCode2;
+
+        if (!config.contains(path1)) {
+            sender.sendMessage("§cPortal data for " + linkCode1 + " not found in owner's file.");
+            return;
+        }
+        if (!config.contains(path2)) {
+            sender.sendMessage("§cPortal data for " + linkCode2 + " not found in owner's file.");
+            return;
+        }
+
+        ConfigurationSection worlds2 = config.getConfigurationSection(path2 + ".worlds");
+        if (worlds2 == null) {
+            sender.sendMessage("§cNo worlds found for " + linkCode2 + " to merge.");
+            return;
+        }
+
+        for (String worldName : worlds2.getKeys(false)) {
+            ConfigurationSection worldData = worlds2.getConfigurationSection(worldName);
+            config.set(path1 + ".worlds." + worldName, worldData);
+        }
+
+        config.set(path2, null);
+
+        try {
+            config.save(playerFile);
+
+            YamlConfiguration globalConfig = plugin.getGlobalPortalMap();
+            globalConfig.set(linkCode2, null);
+            plugin.saveGlobalMap();
+
+            portalCache.keySet().removeIf(key -> key.startsWith(linkCode1 + ":") || key.startsWith(linkCode2 + ":"));
+
+            sender.sendMessage("§aSuccessfully linked " + linkCode2 + " into " + linkCode1 + ".");
+        } catch (IOException e) {
+            sender.sendMessage("§cAn error occurred while saving portal data.");
+            e.printStackTrace();
+        }
+    }
+
+    public void deletePortal(String linkCode, CommandSender sender) {
+        UUID ownerUUID = getPortalOwner(linkCode);
+        if (ownerUUID == null) {
+            sender.sendMessage("§cPortal with link code '" + linkCode + "' not found in global map.");
+            return;
+        }
+
+        File playerFile = new File(dataFolder, ownerUUID.toString() + ".yml");
+        if (!playerFile.exists()) {
+            sender.sendMessage("§cOwner data file not found for portal " + linkCode);
+            return;
+        }
+
+        YamlConfiguration config = YamlConfiguration.loadConfiguration(playerFile);
+        String linkCodeWorldsPath = "portals." + linkCode + ".worlds";
+
+        if (!config.contains(linkCodeWorldsPath)) {
+            sender.sendMessage("§cCould not find any worlds for link code " + linkCode + " in player data.");
+            return;
+        }
+
+        ConfigurationSection worldsSection = config.getConfigurationSection(linkCodeWorldsPath);
+        Set<String> worldNames = worldsSection.getKeys(false);
+        int deleteCount = 0;
+
+        for (String worldName : worldNames) {
+            Portal portal = loadPortal(linkCode, worldName);
+            if (portal != null) {
+                backupPortal(portal);
+                removeMarker(linkCode, portal.getWorld());
+                if (portal.getFrame() != null) {
+                    clearObsidianFrame(portal.getFrame());
+                }
+                portalCache.remove(linkCode + ":" + worldName);
+                sender.sendMessage("§aDeleted portal " + linkCode + " in world " + portal.getWorld().getName());
+                deleteCount++;
+            }
+        }
+
+        if (deleteCount > 0) {
+            config.set("portals." + linkCode, null);
+            try {
+                config.save(playerFile);
+            } catch (IOException e) {
+                e.printStackTrace();
+            }
+
+            YamlConfiguration globalConfig = plugin.getGlobalPortalMap();
+            globalConfig.set(linkCode, null);
+            plugin.saveGlobalMap();
+
+            sender.sendMessage("§aSuccessfully deleted link code " + linkCode + " and its associated portals.");
+        } else {
+            sender.sendMessage("§eNo portals were deleted for link code " + linkCode + ". It might be corrupted.");
+        }
+    }
+
+    public List<String> getBackupFiles() {
+        File backupDir = new File(plugin.getDataFolder(), "backups");
+        if (!backupDir.exists() || !backupDir.isDirectory()) {
+            return new ArrayList<>();
+        }
+        File[] files = backupDir.listFiles();
+        if (files == null) {
+            return new ArrayList<>();
+        }
+        return java.util.Arrays.stream(files)
+                     .map(File::getName)
+                     .filter(name -> name.endsWith(".yml"))
+                     .collect(Collectors.toList());
+    }
+
+    private void backupPortal(Portal portal) {
+        File backupDir = new File(plugin.getDataFolder(), "backups");
+        if (!backupDir.exists()) {
+            backupDir.mkdirs();
+        }
+
+        File backupFile = new File(backupDir, portal.getLinkCode() + "-" + portal.getWorld().getName() + ".yml");
+        YamlConfiguration backupConfig = new YamlConfiguration();
+
+        String basePath = "portal";
+        backupConfig.set(basePath + ".linkCode", portal.getLinkCode());
+        backupConfig.set(basePath + ".owner", portal.getOwner().toString());
+        backupConfig.set(basePath + ".world", portal.getWorld().getName());
+        backupConfig.set(basePath + ".location.x", portal.getLocation().getX());
+        backupConfig.set(basePath + ".location.y", portal.getLocation().getY());
+        backupConfig.set(basePath + ".location.z", portal.getLocation().getZ());
+        backupConfig.set(basePath + ".diamondOverride", portal.hasDiamondOverride());
+
+        if (portal.getFrame() != null) {
+            backupConfig.set(basePath + ".frame.orientation", portal.getFrame().orientation);
+            backupConfig.set(basePath + ".frame.width", portal.getFrame().width);
+            backupConfig.set(basePath + ".frame.height", portal.getFrame().height);
+            backupConfig.set(basePath + ".frame.bottomLeft", formatCoord(portal.getFrame().bottomLeft));
+        }
+
+        try {
+            backupConfig.save(backupFile);
+        } catch (IOException e) {
+            plugin.getLogger().severe("Could not backup portal " + portal.getLinkCode());
+            e.printStackTrace();
+        }
+    }
+
+    private void removeMarker(String linkCode, World world) {
+        for (Entity entity : world.getEntitiesByClass(ArmorStand.class)) {
+            if (entity.getScoreboardTags().contains("gnp_marker")) {
+                String code = entity.getPersistentDataContainer().get(new NamespacedKey(plugin, "linkCode"), PersistentDataType.STRING);
+                if (linkCode.equals(code)) {
+                    entity.remove();
+                    return;
+                }
+            }
+        }
+    }
+
+    private void clearPortalBlocks(PortalFrame frame) {
+        if (frame == null || frame.bottomLeft == null || frame.bottomLeft.getWorld() == null) return;
+        World world = frame.bottomLeft.getWorld();
+        int dx = frame.orientation.equalsIgnoreCase("X") ? 1 : 0;
+        int dz = frame.orientation.equalsIgnoreCase("Z") ? 1 : 0;
+
+        int innerWidth = frame.width - 2;
+        int innerHeight = frame.height - 2;
+        Location start = frame.bottomLeft.clone().add(dx, 1, dz);
+
+        for (int w = 0; w < innerWidth; w++) {
+            for (int h = 0; h < innerHeight; h++) {
+                Location loc = start.clone().add(dx * w, h, dz * w);
+                if (loc.getBlock().getType() == Material.NETHER_PORTAL) {
+                    loc.getBlock().setType(Material.AIR);
+                }
+            }
+        }
     }
 
 
@@ -3948,17 +3286,11 @@ public class PortalManager {
         return new Location(world, sec.getDouble("x"), sec.getDouble("y"), sec.getDouble("z"));
     }
 
-    public String generateUniqueLinkCode(UUID uuid) {
-        YamlConfiguration config = getOrCreatePlayerConfig(uuid);
-        Set<String> existingCodes = config.getConfigurationSection("links") != null
-            ? config.getConfigurationSection("links").getKeys(false)
-            : Collections.emptySet();
-
+    public String generateUniqueLinkCode() {
         String code;
         do {
             code = UUID.randomUUID().toString().substring(0, 6);
-        } while (existingCodes.contains(code) || getPortalMap().contains(code));
-
+        } while (getPortalMap().contains(code));
         return code;
     }
     public String getFirstWorldForLink(String linkCode, UUID uuid) {
@@ -4281,6 +3613,14 @@ public class PortalManager {
 
 	
 	 /** Called by main plugin on WorldLoadEvent */
+    public void forceCreatePortal(Location loc, String linkCode, UUID owner) {
+        buildBasicPortalFrame(loc);
+    }
+
+    public void forceGeneratePairedPortal(String linkCode, String originWorld, UUID uuid, PortalFrame frame) {
+        requestPairedPortalBuild(linkCode, originWorld, uuid, frame);
+    }
+
 	 public void onWorldLoadedKickDeferredBuilds(String worldNameJustLoaded) {
 	     var list = deferred.remove(worldNameJustLoaded);
 	     if (list == null || list.isEmpty()) return;
