@@ -33,6 +33,7 @@ import org.bukkit.block.TileState;
 import org.bukkit.command.CommandSender;
 import org.bukkit.configuration.ConfigurationSection;
 import org.bukkit.configuration.file.YamlConfiguration;
+import org.bukkit.event.block.BlockIgniteEvent;
 //import org.bukkit.craftbukkit.CraftWorld;
 import org.bukkit.entity.ArmorStand;
 import org.bukkit.entity.Entity;
@@ -101,8 +102,10 @@ public class PortalManager {
 
     public void savePortal(Portal portal) {
         if (portal == null) {
+            plugin.getLogger().warning("[GNP-DEBUG] savePortal called with a null portal.");
             return;
         }
+        plugin.getLogger().info("[GNP-DEBUG] Saving portal " + portal.getLinkCode() + " for owner " + portal.getOwner() + " in world " + portal.getWorld().getName());
         File playerFile = new File(dataFolder, portal.getOwner().toString() + ".yml");
         YamlConfiguration config = YamlConfiguration.loadConfiguration(playerFile);
 
@@ -123,7 +126,15 @@ public class PortalManager {
         }
 
         try {
+            if (!dataFolder.exists()) {
+                plugin.getLogger().severe("[GNP-DEBUG] Player data folder does not exist! Attempting to create it...");
+                if (!dataFolder.mkdirs()) {
+                    plugin.getLogger().severe("[GNP-DEBUG] FAILED to create player data folder. Portals will not be saved.");
+                    return;
+                }
+            }
             config.save(playerFile);
+            plugin.getLogger().info("[GNP-DEBUG] Portal data saved successfully to " + playerFile.getPath());
             portalCache.put(portal.getLinkCode() + ":" + portal.getWorld().getName(), portal);
         } catch (IOException e) {
             plugin.getLogger().severe("Could not save portal " + portal.getLinkCode() + " for player " + portal.getOwner());
@@ -581,14 +592,23 @@ public class PortalManager {
 
     public void tryTriggerNaturalPortal(Location frameBase) {
         World world = frameBase.getWorld();
+        if (world == null) return;
+
         Block blockAbove = frameBase.clone().add(0, 1, 0).getBlock();
 
-        // Place fire block on top of obsidian — just like the player would do
         if (blockAbove.getType() == Material.AIR) {
-            blockAbove.setType(Material.FIRE);
-            //plugin.getLogger().info("🔥 Triggered default portal ignition at " + frameBase);
+            // Create and call the event to ensure compatibility with other plugins
+            BlockIgniteEvent igniteEvent = new BlockIgniteEvent(blockAbove, BlockIgniteEvent.IgniteCause.FLINT_AND_STEEL, (Player) null);
+            Bukkit.getPluginManager().callEvent(igniteEvent);
+
+            if (!igniteEvent.isCancelled()) {
+                blockAbove.setType(Material.FIRE);
+                plugin.getLogger().info("[GNP-DEBUG] Successfully set fire for portal ignition at " + blockAbove.getLocation());
+            } else {
+                plugin.getLogger().warning("[GNP-DEBUG] Portal ignition was cancelled by another plugin at " + blockAbove.getLocation());
+            }
         } else {
-            //plugin.getLogger().warning("⚠ Cannot place fire above block: " + blockAbove.getType());
+            plugin.getLogger().warning("[GNP-DEBUG] Cannot place fire above block: " + blockAbove.getType() + " at " + blockAbove.getLocation());
         }
     }
 
@@ -1246,8 +1266,10 @@ public class PortalManager {
 
 
     public void createPortalPair(UUID owner, Location location, PortalFrame frame) {
+        plugin.getLogger().info("[GNP-DEBUG] createPortalPair called for owner " + owner + " at " + location);
         Player player = owner.equals(SERVER_UUID) ? null : Bukkit.getPlayer(owner);
         if (player != null && !hasPortalCreationPermission(player)) {
+            plugin.getLogger().warning("[GNP-DEBUG] Player " + player.getName() + " does not have permission to create a portal.");
             return;
         }
 
@@ -1291,6 +1313,7 @@ public class PortalManager {
     }
  
     public void addPortalToGlobalMap(String linkCode, UUID owner) {
+        plugin.getLogger().info("[GNP-DEBUG] Adding portal " + linkCode + " to global map for owner " + owner);
         File file = new File(plugin.getDataFolder(), "portalMap.yml");
         YamlConfiguration yaml = YamlConfiguration.loadConfiguration(file);
 
@@ -1299,11 +1322,13 @@ public class PortalManager {
 
             try {
                 yaml.save(file);
-                plugin.debugLog("✅ Added portal link " + linkCode + " to portalMap.yml");
+                plugin.getLogger().info("[GNP-DEBUG] Successfully saved portal link " + linkCode + " to portalMap.yml");
             } catch (IOException e) {
-                plugin.debugLog("❌ Failed to save portalMap.yml");
+                plugin.getLogger().severe("[GNP-DEBUG] Failed to save portalMap.yml for link code " + linkCode);
                 e.printStackTrace();
             }
+        } else {
+            plugin.getLogger().warning("[GNP-DEBUG] Link code " + linkCode + " already exists in portalMap.yml. Skipping.");
         }
     }
     

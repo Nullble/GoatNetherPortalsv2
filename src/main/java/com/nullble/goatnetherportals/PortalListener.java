@@ -98,6 +98,8 @@ public class PortalListener implements Listener {
 
     @EventHandler(priority = EventPriority.HIGHEST)
     public void onPlayerInteract(PlayerInteractEvent event) {
+        // This listener is now only for logging and ensuring the ignite event is called.
+        // The actual portal creation is handled by onPortalCreate.
         if (event.getAction() != Action.RIGHT_CLICK_BLOCK || event.getHand() != EquipmentSlot.HAND) {
             return;
         }
@@ -112,31 +114,8 @@ public class PortalListener implements Listener {
             return;
         }
 
-        Player player = event.getPlayer();
-        event.setCancelled(true);
-
-        Location obsidianLoc = clickedBlock.getLocation();
-
-        // Trigger vanilla portal creation
-        plugin.getPortalManager().tryTriggerNaturalPortal(obsidianLoc);
-
-        // Schedule a task to check for the portal frame after ignition
-        Bukkit.getScheduler().runTaskLater(plugin, () -> {
-            Location portalBlock = portalManager.findNearbyPortalBlock(obsidianLoc, 4);
-            if (portalBlock == null) {
-                player.sendMessage("§cPortal did not form correctly. Try again.");
-                return;
-            }
-
-            PortalFrame frame = portalManager.scanFullPortalFrame(portalBlock);
-            if (frame == null) {
-                player.sendMessage("§cCould not validate the portal structure.");
-                return;
-            }
-
-            portalManager.createPortalPair(player.getUniqueId(), portalBlock, frame);
-
-        }, 2L); // 2-tick delay to allow the portal to form
+        // We don't cancel the event. We let the fire be placed, which triggers the PortalCreateEvent.
+        plugin.getLogger().info("[GNP-DEBUG] Player " + event.getPlayer().getName() + " is attempting to light a portal.");
     }
 
     @EventHandler(priority = EventPriority.MONITOR)
@@ -202,6 +181,44 @@ public class PortalListener implements Listener {
                 event.setCancelled(true); // prevent right-click interaction
             }
         }
+    }
+
+    @EventHandler(priority = EventPriority.MONITOR, ignoreCancelled = true)
+    public void onPortalCreate(PortalCreateEvent event) {
+        if (!(event.getEntity() instanceof Player)) {
+            // For now, we only handle player-created portals to avoid conflicts.
+            // Dispenser logic could be re-added here if needed.
+            return;
+        }
+
+        Player player = (Player) event.getEntity();
+        plugin.getLogger().info("[GNP-DEBUG] PortalCreateEvent triggered by player " + player.getName());
+
+        // Find a portal block within the created portal area
+        Location portalBlock = null;
+        for (BlockState blockState : event.getBlocks()) {
+            if (blockState.getType() == Material.NETHER_PORTAL) {
+                portalBlock = blockState.getLocation();
+                break;
+            }
+        }
+
+        if (portalBlock == null) {
+            plugin.getLogger().severe("[GNP-DEBUG] PortalCreateEvent fired, but no NETHER_PORTAL block found.");
+            return;
+        }
+
+        plugin.getLogger().info("[GNP-DEBUG] Portal block found at " + portalBlock);
+
+        PortalFrame frame = portalManager.scanFullPortalFrame(portalBlock);
+        if (frame == null) {
+            plugin.getLogger().warning("[GNP-DEBUG] Portal frame scan failed after PortalCreateEvent.");
+            player.sendMessage("§cCould not validate the custom portal structure.");
+            return;
+        }
+
+        plugin.getLogger().info("[GNP-DEBUG] Portal frame scanned successfully. Calling createPortalPair.");
+        portalManager.createPortalPair(player.getUniqueId(), portalBlock, frame);
     }
 
     @EventHandler
